@@ -166,10 +166,26 @@ settings. Removing a mapping does not delete files already installed.
 | `install` | Reuse locked releases. Resolve new apps without lock entries. Reject changed app definitions until `update` is run. |
 | `update` | Resolve each manifest entry again, download and verify it, and refresh the lockfile. Exact version pins remain pinned. |
 | `status` | Compare local files with locked checksums, offline. Report unlocked, changed, missing, or modified apps. |
+| `manifest` | Print the discovered manifest as JSON; does not change the device. |
 
-All commands require either `--target` or `--mtp`. Use `--manifest path/to/apps.json` to select a
-different manifest. Its lockfile will be `path/to/apps.lock.json`.
-Commit both manifest and lockfile for repeatable installs.
+These commands require either `--target` or `--mtp`. The default manifest and
+lockfile live on the SD card at `switch/.switchpack/switchpack.json` and
+`switch/.switchpack/switchpack.lock.json`. A new computer can run `status`,
+`install`, or `update` against that saved setup without any local project files.
+
+If the Switch has no saved manifest, the CLI falls back to `./switchpack.json`.
+Use `--manifest path/to/apps.json` to explicitly select a local file instead.
+Its local lockfile is `path/to/apps.lock.json`; if absent, the saved Switch lock
+is reused. Successful installs and updates save the complete manifest and lock
+to the Switch, and also write a local lock when a local manifest was selected.
+Keep local copies in Git if desired.
+
+An explicit local manifest replaces the whole saved manifest. Omitted packages
+are reported and their files are retained, but they stop being managed. To edit
+the saved setup, export it with `switchpack manifest --mtp > my-switch.json`, edit
+the file, then apply it with `install --manifest my-switch.json --mtp` (use
+`update` when changing package definitions other than `enabled`). On a mounted
+card you can edit the saved manifest directly. Status/export never write metadata.
 
 `install` and `update` support `--dry-run`: download and validate everything,
 report planned writes, and leave app files and the lockfile untouched. This still
@@ -213,7 +229,9 @@ can replace system configuration, so inspect new manifests with `--dry-run`.
 
 Installation failures attempt to restore replaced files and remove newly written
 files. USB disconnection can prevent rollback; errors include the backup location
-when rollback fails. The lockfile is replaced only after successful app writes. This is **not
+when rollback fails. On-Switch manifest/lock writes participate in the same
+readback, backup, and rollback scope as app files. A local lockfile, when used,
+is replaced only after successful device writes. This is **not
 a power-loss-safe transaction**: ejecting a card, terminating the process, or
 losing power during writes may require manual recovery from backups. Empty
 directories can remain after rollback. Do not modify the target concurrently.

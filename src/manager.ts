@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { relativePath, destination } from "./paths";
@@ -9,7 +9,9 @@ import { filesystemTarget, mtpTarget, optionalRead, type Target } from "./target
 type App = { repo: string; version: string; asset: string; destination?: string; files?: Record<string, string>; enableFile?: string; enabled?: boolean };
 type LockedApp = { spec: App; tag: string; sha256: string; files: Record<string, string> };
 type Lock = { schemaVersion: 1; apps: Record<string, LockedApp> };
-export type Options = { manifest: string; target?: string; mtp?: boolean; mtpHelper?: string; releaseCamera?: boolean; dryRun?: boolean };
+export type Options = { manifest?: string; target?: string; mtp?: boolean; mtpHelper?: string; releaseCamera?: boolean; dryRun?: boolean };
+export const SWITCH_MANIFEST = "switch/.switchpack/switchpack.json";
+export const SWITCH_LOCK = "switch/.switchpack/switchpack.lock.json";
 type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
 const MAX_BYTES = 128 * 1024 * 1024;
 const hash = (data: Uint8Array | string) => createHash("sha256").update(data).digest("hex");
@@ -57,8 +59,8 @@ function parseApp(value: unknown): App {
 const paths = (app: App) => [...(app.files ? Object.values(app.files) : [app.destination!]), ...(app.enableFile && app.enabled ? [app.enableFile] : [])];
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
-async function manifestAt(path: string): Promise<Record<string, App>> {
-  const input: unknown = JSON.parse(await readFile(path, "utf8"));
+function parseManifest(bytes: Uint8Array): Record<string, App> {
+  const input: unknown = JSON.parse(new TextDecoder().decode(bytes));
   if (!record(input)) fail("Manifest must be an object");
   keys(input, ["schemaVersion", "apps"]);
   if (input.schemaVersion !== 1 || !record(input.apps)) fail("Expected schemaVersion: 1 and apps object");
@@ -77,8 +79,7 @@ async function manifestAt(path: string): Promise<Record<string, App>> {
   return apps;
 }
 
-async function lockAt(path: string): Promise<Lock> {
-  const bytes = await optionalRead(path);
+function parseLock(bytes?: Uint8Array): Lock {
   if (!bytes) return { schemaVersion: 1, apps: Object.create(null) };
   const input: unknown = JSON.parse(new TextDecoder().decode(bytes));
   if (!record(input) || input.schemaVersion !== 1 || !record(input.apps)) fail("Invalid lockfile");
@@ -173,29 +174,36 @@ async function release(app: App, fetcher: Fetcher): Promise<{ tag: string; sha25
   return { tag: data.tag_name, sha256: sha };
 }
 
-export async function run(command: "install" | "update" | "status", options: Options, fetcher: Fetcher = fetch, injectedTarget?: Target): Promise<string[]> {
-  const requestedManifest = resolve(options.manifest);
-  const manifestPath = join(await realpath(dirname(requestedManifest)), basename(requestedManifest));
-  const lockPath = manifestPath.replace(/\.json$/, "") + ".lock.json";
+export async function run(command: "install" | "update" | "status" | "manifest", options: Options, fetcher: Fetcher = fetch, injectedTarget?: Target): Promise<string[]> {
   if (Boolean(options.target) === Boolean(options.mtp)) fail("Choose exactly one of --target (Hekate/mounted SD) or --mtp (DBI)");
   const target = injectedTarget ?? (options.mtp ? mtpTarget(options.mtpHelper, options.releaseCamera) : await filesystemTarget(options.target!));
-  const guard = join(dirname(manifestPath), ".switchpack-running");
-  // The target guard also prevents different manifests from writing the same card concurrently.
-  const targetGuard = target.guard;
+  const readonly = command === "status" || command === "manifest" || options.dryRun;
   const guards: string[] = [];
-  try {
-    if (options.mtp || (command !== "status" && !options.dryRun)) {
-      const neededGuards = command === "status" || options.dryRun ? [targetGuard] : [guard, targetGuard];
-      for (const path of new Set(neededGuards)) {
-        try { await mkdir(path); } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "EEXIST") fail(`Another operation may be running: ${path}. Remove this directory only if no switchpack process is running.`);
-          throw error;
-        }
-        guards.push(path);
-      }
+  async function acquire(path: string) {
+    if (guards.includes(path)) return;
+    try { await mkdir(path); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") fail(`Another operation may be running: ${path}. Remove this directory only if no switchpack process is running.`);
+      throw error;
     }
-    const apps = await manifestAt(manifestPath);
-    const previous = await lockAt(lockPath);
+    guards.push(path);
+  }
+  try {
+    if (options.mtp || !readonly) await acquire(target.guard);
+    const savedManifest = await target.read(SWITCH_MANIFEST);
+    const savedLock = await target.read(SWITCH_LOCK);
+    // The Switch is authoritative unless a local manifest was explicitly selected.
+    let manifestPath: string | undefined;
+    if (options.manifest || !savedManifest) {
+      const requested = resolve(options.manifest ?? "switchpack.json");
+      manifestPath = join(await realpath(dirname(requested)), basename(requested));
+      if (!readonly) await acquire(join(dirname(manifestPath), ".switchpack-running"));
+    }
+    const manifestBytes = manifestPath ? await optionalRead(manifestPath) : savedManifest;
+    if (!manifestBytes) fail("No manifest found on this Switch or locally. Run switchpack init, then install --manifest switchpack.json with your connection options.");
+    const apps = parseManifest(manifestBytes);
+    if (command === "manifest") return [JSON.stringify({ schemaVersion: 1, apps }, null, 2)];
+    const lockPath = manifestPath ? manifestPath.replace(/\.json$/, "") + ".lock.json" : undefined;
+    const previous = parseLock((lockPath ? await optionalRead(lockPath) : undefined) ?? savedLock);
     const messages: string[] = [];
     const next: Lock = { schemaVersion: 1, apps: Object.create(null) };
     const writes: { path: string; data?: Uint8Array; before?: Uint8Array }[] = [];
@@ -278,7 +286,18 @@ export async function run(command: "install" | "update" | "status", options: Opt
       messages.push(`${name}@${resolved.tag}: ${changed ? `${changed} file change(s)` : "up to date"}`);
     }
     if (command === "status") return messages;
+    if (savedManifest && manifestPath) {
+      const removed = Object.keys(parseManifest(savedManifest)).filter(name => !Object.hasOwn(apps, name));
+      if (removed.length) messages.push(`Saved manifest replacement stops managing: ${removed.join(", ")}. Their installed files are preserved.`);
+    }
     if (options.dryRun) return [...messages, "Dry run: no files or lockfile written."];
+    // Persist the manifest and lock on the device in the same rollback scope as app files.
+    for (const [path, data, before] of [
+      [SWITCH_MANIFEST, Buffer.from(JSON.stringify({ schemaVersion: 1, apps }, null, 2) + "\n"), savedManifest],
+      [SWITCH_LOCK, Buffer.from(JSON.stringify(next, null, 2) + "\n"), savedLock],
+    ] as const) {
+      if (!before || hash(before) !== hash(data)) writes.push({ path, data, before });
+    }
     const id = `${Date.now()}-${randomUUID()}`;
     const backupBase = `switch/.switchpack/backups/${id}`;
     // Back up replacements and enable-file removals before changing the target.
@@ -286,7 +305,7 @@ export async function run(command: "install" | "update" | "status", options: Opt
       await target.write(`${backupBase}/${item.path}`, item.before, true);
     }
     const applied: typeof writes = [];
-    const temporaryLock = `${lockPath}.${id}.tmp`;
+    const temporaryLock = lockPath ? `${lockPath}.${id}.tmp` : undefined;
     try {
       for (const item of writes) {
         applied.push(item);
@@ -295,8 +314,10 @@ export async function run(command: "install" | "update" | "status", options: Opt
         const readback = await target.read(item.path);
         if (item.data !== undefined ? !readback || hash(readback) !== hash(item.data) : readback !== undefined) fail(`Installed file readback mismatch: ${item.path}`);
       }
-      await writeFile(temporaryLock, JSON.stringify(next, null, 2) + "\n", { flag: "wx" });
-      await rename(temporaryLock, lockPath);
+      if (temporaryLock && lockPath) {
+        await writeFile(temporaryLock, JSON.stringify(next, null, 2) + "\n", { flag: "wx" });
+        await rename(temporaryLock, lockPath);
+      }
     } catch (error) {
       const failures: string[] = [];
       for (const item of applied.reverse()) {
@@ -310,9 +331,10 @@ export async function run(command: "install" | "update" | "status", options: Opt
       }
       if (failures.length) fail(`Installation failed and rollback failed for ${failures.join(", ")}. Backups: ${target.describe(backupBase)}. Original error: ${String(error)}`);
       throw error;
-    } finally { await rm(temporaryLock, { force: true }); }
+    } finally { if (temporaryLock) await rm(temporaryLock, { force: true }); }
     if (writes.some(item => item.before)) messages.push(`Backups: ${target.describe(backupBase)}`);
-    messages.push(`Lockfile: ${lockPath}`);
+    messages.push(`Switch manifest: ${target.describe(SWITCH_MANIFEST)}`);
+    if (lockPath) messages.push(`Local lockfile: ${lockPath}`);
     return messages;
   } finally {
     for (const path of guards.reverse()) await rm(path, { recursive: true });

@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mtpTarget } from "../src/target";
-import { run } from "../src/manager";
+import { run, SWITCH_MANIFEST, SWITCH_LOCK } from "../src/manager";
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -131,4 +131,21 @@ test("MTP manifest enable files can be removed, verified and recreated offline",
   await save();
   await run("install", f.options, offline, f.target);
   expect((await f.target.read(enableFile))?.length).toBe(0);
+});
+
+test("fresh-PC MTP discovery reads saved manifest and lock through the helper", async () => {
+  const f = await fixture();
+  await run("install", f.options, f.fetcher, f.target);
+  expect(await f.target.read(SWITCH_MANIFEST)).toBeDefined();
+  expect(await f.target.read(SWITCH_LOCK)).toBeDefined();
+  await rm(f.manifest);
+  await rm(join(f.root, "switchpack.lock.json"));
+  const options = { mtp: true, mtpHelper: f.helper };
+  const offline = async (): Promise<Response> => { throw new Error("No network"); };
+  expect(await run("status", options, offline, f.target)).toEqual(["app@v1: ok"]);
+  const [manifest] = await run("manifest", options, offline, f.target);
+  expect(JSON.parse(manifest!).apps.app.repo).toBe("example/app");
+  await run("install", options, f.fetcher, f.target);
+  expect(await Bun.file(f.manifest).exists()).toBe(false);
+  expect(await Bun.file(join(f.root, "switchpack.lock.json")).exists()).toBe(false);
 });

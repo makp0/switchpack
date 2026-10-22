@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { zipSync } from "fflate";
-import { run } from "../src/manager";
+import { run, SWITCH_MANIFEST, SWITCH_LOCK } from "../src/manager";
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -279,7 +279,8 @@ test("7z packages extract only mapped files, including empty files, and reject m
   expect(await readFile(join(f.target, base, "exefs.nsp"), "utf8")).toBe("module");
   expect((await readFile(join(f.target, base, "flags/boot2.flag"))).length).toBe(0);
   expect(await run("status", f.options, fetcher)).toEqual(["botbase@v1: ok"]);
-  expect(await readdir(f.target)).toEqual(["atmosphere"]);
+  expect((await readdir(f.target)).sort()).toEqual(["atmosphere", "switch"]);
+  expect(await Bun.file(join(f.target, "unlisted")).exists()).toBe(false);
   await f.save({ botbase: { ...app, files: { missing: "elsewhere/file" } } });
   await expect(run("update", f.options, fetcher)).rejects.toThrow("missing or duplicated");
 });
@@ -380,4 +381,133 @@ test("flag changes repair modified payloads from the locked release", async () =
   expect(f.calls).toHaveLength(1);
   expect(f.calls[0]).toContain("/download/v1/");
   expect(await run("status", f.options, f.fetcher)).toEqual(["app@v1: ok"]);
+});
+
+test("a fresh PC discovers the Switch manifest and lock without creating local files", async () => {
+  const f = await fixture();
+  await run("install", f.options, f.fetcher);
+  expect(JSON.parse(await readFile(join(f.target, SWITCH_MANIFEST), "utf8")).apps.app.repo).toBe("example/app");
+  expect(await readFile(join(f.target, SWITCH_LOCK), "utf8")).toBe(await readFile(f.lock, "utf8"));
+  await rm(f.manifest);
+  await rm(f.lock);
+  const options = { target: f.target };
+  const offline = async (): Promise<Response> => { throw new Error("No network"); };
+  expect(await run("status", options, offline)).toEqual(["app@v1: ok"]);
+  const [exported] = await run("manifest", options, offline);
+  expect(JSON.parse(exported!).apps.app.repo).toBe("example/app");
+  f.calls.length = 0;
+  await run("install", options, f.fetcher);
+  expect(f.calls).toHaveLength(1);
+  expect(f.calls[0]).toContain("/download/v1/");
+  f.bump();
+  await run("update", options, f.fetcher);
+  expect(await readFile(f.file, "utf8")).toBe("second release");
+  expect(JSON.parse(await readFile(join(f.target, SWITCH_LOCK), "utf8")).apps.app.tag).toBe("v2");
+  expect(await Bun.file(f.manifest).exists()).toBe(false);
+  expect(await Bun.file(f.lock).exists()).toBe(false);
+});
+
+test("CLI bootstraps from the local manifest then prioritizes the saved Switch setup", async () => {
+  const f = await fixture();
+  const cli = join(import.meta.dir, "../src/cli.ts");
+  const initial = Bun.spawnSync([process.execPath, cli, "manifest", "--target", f.target], { cwd: f.root });
+  expect(initial.exitCode).toBe(0);
+  expect(JSON.parse(initial.stdout.toString()).apps.app.repo).toBe("example/app");
+  expect(await readdir(f.target)).toEqual([]);
+  await run("install", f.options, f.fetcher);
+  await writeFile(f.manifest, "invalid local JSON that must not be read");
+  const result = Bun.spawnSync([process.execPath, cli, "status", "--target", f.target], { cwd: f.root });
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout.toString()).toContain("app@v1: ok");
+  const fresh = join(f.root, "fresh-pc");
+  await mkdir(fresh);
+  const exported = Bun.spawnSync([process.execPath, cli, "manifest", "--target", f.target], { cwd: fresh });
+  expect(exported.exitCode).toBe(0);
+  expect(JSON.parse(exported.stdout.toString()).apps.app.repo).toBe("example/app");
+  expect(await readdir(fresh)).toEqual([]);
+});
+
+test("edits to the on-Switch manifest can toggle boot flags offline", async () => {
+  const f = await fixture();
+  const enableFile = "config/app/enabled.flag";
+  await f.save({ app: { ...f.app, enableFile, enabled: true } });
+  await run("install", f.options, f.fetcher);
+  const manifest = join(f.target, SWITCH_MANIFEST);
+  const edited = JSON.parse(await readFile(manifest, "utf8"));
+  edited.apps.app.enabled = false;
+  await writeFile(manifest, JSON.stringify(edited));
+  await run("install", { target: f.target }, async () => { throw new Error("Must work offline"); });
+  expect(await Bun.file(join(f.target, enableFile)).exists()).toBe(false);
+  expect(JSON.parse(await readFile(join(f.target, SWITCH_LOCK), "utf8")).apps.app.spec.enabled).toBe(false);
+});
+
+test("metadata write failure restores both app payloads and the saved setup", async () => {
+  const f = await fixture();
+  await run("install", f.options, f.fetcher);
+  const manifestBefore = await readFile(join(f.target, SWITCH_MANIFEST), "utf8");
+  const lockBefore = await readFile(join(f.target, SWITCH_LOCK), "utf8");
+  const localBefore = await readFile(f.lock, "utf8");
+  f.bump();
+  // A changed manifest ensures rollback also restores its previous contents.
+  f.app.version = "v2";
+  await f.save();
+  const { filesystemTarget } = await import("../src/target");
+  const target = await filesystemTarget(f.target);
+  const write = target.write;
+  let failOnce = true;
+  target.write = async (path, bytes, exclusive) => {
+    await write(path, bytes, exclusive);
+    if (path === SWITCH_LOCK && failOnce) { failOnce = false; throw new Error("USB write interrupted"); }
+  };
+  await expect(run("update", f.options, f.fetcher, target)).rejects.toThrow("USB write interrupted");
+  expect(await readFile(f.file, "utf8")).toBe("first release");
+  expect(await readFile(join(f.target, SWITCH_MANIFEST), "utf8")).toBe(manifestBefore);
+  expect(await readFile(join(f.target, SWITCH_LOCK), "utf8")).toBe(lockBefore);
+  expect(await readFile(f.lock, "utf8")).toBe(localBefore);
+});
+
+test("dry runs preserve saved metadata and explicit replacement reports unmanaged packages", async () => {
+  const f = await fixture();
+  await run("install", f.options, f.fetcher);
+  const manifestBefore = await readFile(join(f.target, SWITCH_MANIFEST), "utf8");
+  const lockBefore = await readFile(join(f.target, SWITCH_LOCK), "utf8");
+  await f.save({});
+  const messages = await run("update", { ...f.options, dryRun: true }, f.fetcher);
+  expect(messages.join(" ")).toContain("stops managing: app");
+  expect(await readFile(join(f.target, SWITCH_MANIFEST), "utf8")).toBe(manifestBefore);
+  expect(await readFile(join(f.target, SWITCH_LOCK), "utf8")).toBe(lockBefore);
+  await run("update", f.options, f.fetcher);
+  expect(JSON.parse(await readFile(join(f.target, SWITCH_MANIFEST), "utf8")).apps).toEqual({});
+  expect(await readFile(f.file, "utf8")).toBe("first release");
+});
+
+test("a missing explicit local lock reuses the saved lock", async () => {
+  const f = await fixture();
+  await run("install", f.options, f.fetcher);
+  await rm(f.lock);
+  f.calls.length = 0;
+  await run("install", f.options, f.fetcher);
+  expect(f.calls).toHaveLength(1);
+  expect(f.calls[0]).toContain("/download/v1/");
+});
+
+test("malformed saved manifests and reserved metadata destinations are rejected", async () => {
+  const f = await fixture();
+  await run("install", f.options, f.fetcher);
+  await writeFile(join(f.target, SWITCH_MANIFEST), "not JSON");
+  await expect(run("install", { target: f.target }, f.fetcher)).rejects.toThrow();
+  for (const destination of [SWITCH_MANIFEST, SWITCH_LOCK, "switch/.switchpack"]) {
+    await f.save({ app: { ...f.app, destination } });
+    await expect(run("install", f.options, f.fetcher)).rejects.toThrow("backup storage");
+  }
+});
+
+test("a malformed saved lock fails before modifying payloads", async () => {
+  const f = await fixture();
+  await run("install", f.options, f.fetcher);
+  await writeFile(join(f.target, SWITCH_LOCK), "invalid lock");
+  f.calls.length = 0;
+  await expect(run("update", { target: f.target }, f.fetcher)).rejects.toThrow();
+  expect(f.calls).toHaveLength(0);
+  expect(await readFile(f.file, "utf8")).toBe("first release");
 });

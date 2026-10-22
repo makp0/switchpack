@@ -93,8 +93,49 @@ of `files`. Only listed files are installed. Destinations can be any safe
 SD-relative file path, including `atmosphere/contents/`, `config/`, and overlays.
 ZIP support is built in; 7z archives require `7zz` or `7z` on PATH.
 
-The first install creates `switchpack.lock.json` with exact release tags and
-SHA-256 checksums. Keep both files in Git to reproduce your setup.
+The first successful install saves the manifest and checksum lockfile on the
+Switch at:
+
+```text
+sd:/switch/.switchpack/switchpack.json
+sd:/switch/.switchpack/switchpack.lock.json
+```
+
+Subsequent commands discover that setup automatically, even on a fresh computer.
+When bootstrapping from a local manifest, a local lockfile is also written so you
+can keep your setup in Git.
+
+## Continue from another computer
+
+Install the CLI, connect the same Switch, then run:
+
+```sh
+switchpack status --mtp
+switchpack update --mtp --dry-run
+switchpack update --mtp
+```
+
+There is no local project to restore. For Hekate or a card reader, use
+`--target <mounted SD root>` instead of `--mtp`.
+
+To view or edit the saved configuration:
+
+```sh
+switchpack manifest --mtp > my-switch.json
+# Edit my-switch.json, for example to set a sysmodule's enabled field to false.
+switchpack install --manifest my-switch.json --mtp
+```
+
+The manifest on the Switch takes precedence over `./switchpack.json`.
+`--manifest <file>` explicitly selects a local replacement; without one, the CLI
+only falls back to `./switchpack.json` if the Switch has no saved manifest yet.
+A missing local lockfile reuses the saved Switch lockfile.
+
+An explicit manifest replaces the **whole** saved setup. Include every package
+you want to keep managing. Omitted packages are reported and their files remain
+installed. Each successful install/update saves the resulting manifest and
+lockfile back to the Switch; `status`, `manifest`, and `--dry-run` do not change
+them. You can also edit the saved JSON directly on a mounted card.
 
 ## Sysmodules and boot flags
 
@@ -142,8 +183,9 @@ Use `--target <path>` instead of `--mtp` for a mounted card.
 | `install` | Install locked releases; resolve apps without lock entries. |
 | `update` | Resolve the manifest again and refresh installed files and lockfile. |
 | `status` | Check installed files against the lockfile without contacting GitHub. |
+| `manifest` | Print the discovered manifest as JSON for viewing or editing. |
 
-Use `--manifest path/to/apps.json` for another setup, or `--help` for options.
+Use `--manifest path/to/apps.json` to replace the saved setup, or `--help` for options.
 Changed package definitions require `update`, except for `enabled` changes.
 Removing a package from the manifest
 does not delete its files.
@@ -153,6 +195,9 @@ does not delete its files.
 Replaced files are backed up on the SD card under
 `switch/.switchpack/backups/<operation-id>/`. Unlisted files stay untouched.
 Installed files are read back and checked before the lockfile is saved.
+The on-Switch manifest and lockfile use the same backups, readback checks, and
+rollback scope as package files. A failed operation restores their previous
+contents when the connection still permits recovery.
 
 Failed installs attempt rollback. A disconnected cable or power loss can prevent
 recovery; inspect the backups before retrying. See
