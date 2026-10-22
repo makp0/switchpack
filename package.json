@@ -8,7 +8,8 @@
     "cli": "bun src/cli.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "build": "bun build --compile src/cli.ts --outfile dist/switchpack"
+    "build": "bun build --compile src/cli.ts --outfile dist/switchpack",
+    "build:mtp": "bun scripts/build-mtp.ts"
   },
   "dependencies": { "commander": "^14.0.0", "fflate": "^0.8.2" },
   "devDependencies": { "@types/bun": "^1.3.0", "typescript": "^5.9.0" }

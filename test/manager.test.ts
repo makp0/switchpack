@@ -181,5 +181,5 @@ test("CLI framework provides help and rejects a missing target", async () => {
   expect(help.stdout.toString()).toContain("install");
   const missing = Bun.spawnSync([process.execPath, cli, "install"]);
   expect(missing.exitCode).toBe(1);
-  expect(missing.stderr.toString()).toContain("required option");
+  expect(missing.stderr.toString()).toContain("Choose exactly one");
 });

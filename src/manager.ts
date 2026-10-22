@@ -1,12 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { unzipSync } from "fflate";
+import { filesystemTarget, mtpTarget, optionalRead, type Target } from "./target";
 
 type App = { repo: string; version: string; asset: string; destination?: string; files?: Record<string, string> };
 type LockedApp = { spec: App; tag: string; sha256: string; files: Record<string, string> };
 type Lock = { schemaVersion: 1; apps: Record<string, LockedApp> };
-export type Options = { manifest: string; target: string; dryRun?: boolean };
+export type Options = { manifest: string; target?: string; mtp?: boolean; mtpHelper?: string; releaseCamera?: boolean; dryRun?: boolean };
 type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
 const MAX_BYTES = 128 * 1024 * 1024;
 const hash = (data: Uint8Array | string) => createHash("sha256").update(data).digest("hex");
@@ -83,13 +84,6 @@ async function manifestAt(path: string): Promise<Record<string, App>> {
   return apps;
 }
 
-async function optionalRead(path: string): Promise<Uint8Array | undefined> {
-  try { return await readFile(path); } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  }
-}
-
 async function lockAt(path: string): Promise<Lock> {
   const bytes = await optionalRead(path);
   if (!bytes) return { schemaVersion: 1, apps: Object.create(null) };
@@ -110,24 +104,6 @@ async function lockAt(path: string): Promise<Lock> {
     apps[name] = { spec, tag: value.tag, sha256: value.sha256, files };
   }
   return { schemaVersion: 1, apps };
-}
-
-// Refuse symlinks in every existing component, including the destination itself.
-async function safePath(root: string, path: string): Promise<string> {
-  relativePath(path);
-  let current = root;
-  const parts = path.split("/");
-  for (const [index, part] of parts.entries()) {
-    current = join(current, part);
-    try {
-      const info = await lstat(current);
-      if (info.isSymbolicLink()) fail(`Refusing symlink: ${current}`);
-      if (index < parts.length - 1 ? !info.isDirectory() : !info.isFile()) fail(`Unexpected file type: ${current}`);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-  }
-  return current;
 }
 
 async function responseBytes(response: Response): Promise<Uint8Array> {
@@ -164,19 +140,20 @@ async function release(app: App, fetcher: Fetcher): Promise<{ tag: string; sha25
   return { tag: data.tag_name, sha256: sha };
 }
 
-export async function run(command: "install" | "update" | "status", options: Options, fetcher: Fetcher = fetch): Promise<string[]> {
+export async function run(command: "install" | "update" | "status", options: Options, fetcher: Fetcher = fetch, injectedTarget?: Target): Promise<string[]> {
   const requestedManifest = resolve(options.manifest);
   const manifestPath = join(await realpath(dirname(requestedManifest)), basename(requestedManifest));
   const lockPath = manifestPath.replace(/\.json$/, "") + ".lock.json";
-  const root = await realpath(options.target);
-  if (!(await lstat(root)).isDirectory()) fail("Target must be an existing directory");
+  if (Boolean(options.target) === Boolean(options.mtp)) fail("Choose exactly one of --target (Hekate/mounted SD) or --mtp (DBI)");
+  const target = injectedTarget ?? (options.mtp ? mtpTarget(options.mtpHelper, options.releaseCamera) : await filesystemTarget(options.target!));
   const guard = join(dirname(manifestPath), ".switchpack-running");
   // The target guard also prevents different manifests from writing the same card concurrently.
-  const targetGuard = join(root, ".switchpack-running");
+  const targetGuard = target.guard;
   const guards: string[] = [];
   try {
-    if (command !== "status" && !options.dryRun) {
-      for (const path of new Set([guard, targetGuard])) {
+    if (options.mtp || (command !== "status" && !options.dryRun)) {
+      const neededGuards = command === "status" || options.dryRun ? [targetGuard] : [guard, targetGuard];
+      for (const path of new Set(neededGuards)) {
         try { await mkdir(path); } catch (error) {
           if ((error as NodeJS.ErrnoException).code === "EEXIST") fail(`Another operation may be running: ${path}. Remove this directory only if no switchpack process is running.`);
           throw error;
@@ -196,7 +173,7 @@ export async function run(command: "install" | "update" | "status", options: Opt
         if (!matches) { messages.push(`${name}: ${locked ? "manifest changed; run update" : "unlocked; run install"}`); continue; }
         const states = [];
         for (const [path, sha] of Object.entries(locked.files)) {
-          const bytes = await optionalRead(await safePath(root, path));
+          const bytes = await target.read(path);
           states.push(!bytes ? "missing" : hash(bytes) === sha ? "ok" : "modified");
         }
         messages.push(`${name}@${locked.tag}: ${states.every(state => state === "ok") ? "ok" : states.filter(state => state !== "ok").join(", ")}`);
@@ -231,7 +208,7 @@ export async function run(command: "install" | "update" | "status", options: Opt
       for (const [path, bytes] of Object.entries(files)) {
         checksums[path] = hash(bytes);
         if (command === "install" && matches && checksums[path] !== locked.files[path]) fail(`${name}: locked file checksum mismatch`);
-        const before = await optionalRead(await safePath(root, path));
+        const before = await target.read(path);
         if (!before || hash(before) !== checksums[path]) { writes.push({ path, data: bytes, before }); changed++; }
       }
       next.apps[name] = { spec: app, tag: resolved.tag, sha256, files: checksums };
@@ -243,18 +220,16 @@ export async function run(command: "install" | "update" | "status", options: Opt
     const backupBase = `switch/.switchpack/backups/${id}`;
     // Back up everything before the first app write. No files are deleted on update.
     for (const item of writes) if (item.before) {
-      const backup = await safePath(root, `${backupBase}/${item.path}`);
-      await mkdir(dirname(backup), { recursive: true });
-      await writeFile(backup, item.before, { flag: "wx" });
+      await target.write(`${backupBase}/${item.path}`, item.before, true);
     }
     const applied: typeof writes = [];
     const temporaryLock = `${lockPath}.${id}.tmp`;
     try {
       for (const item of writes) {
-        const path = await safePath(root, item.path);
-        await mkdir(dirname(path), { recursive: true });
         applied.push(item);
-        await writeFile(path, item.data);
+        await target.write(item.path, item.data);
+        const readback = await target.read(item.path);
+        if (!readback || hash(readback) !== hash(item.data)) fail(`Installed file readback mismatch: ${item.path}`);
       }
       await writeFile(temporaryLock, JSON.stringify(next, null, 2) + "\n", { flag: "wx" });
       await rename(temporaryLock, lockPath);
@@ -262,15 +237,17 @@ export async function run(command: "install" | "update" | "status", options: Opt
       const failures: string[] = [];
       for (const item of applied.reverse()) {
         try {
-          const path = await safePath(root, item.path);
-          if (item.before) await writeFile(path, item.before);
-          else await rm(path, { force: true });
+          if (item.before) {
+            await target.write(item.path, item.before);
+            const readback = await target.read(item.path);
+            if (!readback || hash(readback) !== hash(item.before)) fail(`Rollback readback mismatch: ${item.path}`);
+          } else await target.remove(item.path);
         } catch { failures.push(item.path); }
       }
-      if (failures.length) fail(`Installation failed and rollback failed for ${failures.join(", ")}. Backups: ${join(root, backupBase)}. Original error: ${String(error)}`);
+      if (failures.length) fail(`Installation failed and rollback failed for ${failures.join(", ")}. Backups: ${target.describe(backupBase)}. Original error: ${String(error)}`);
       throw error;
     } finally { await rm(temporaryLock, { force: true }); }
-    if (writes.some(item => item.before)) messages.push(`Backups: ${join(root, backupBase)}`);
+    if (writes.some(item => item.before)) messages.push(`Backups: ${target.describe(backupBase)}`);
     messages.push(`Lockfile: ${lockPath}`);
     return messages;
   } finally {
