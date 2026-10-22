@@ -1,3 +1,4 @@
+import { relativePath } from "./paths";
 import { existsSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -20,10 +21,7 @@ export async function optionalRead(path: string): Promise<Uint8Array | undefined
 
 // Check every existing component, including the destination itself.
 async function safePath(root: string, path: string): Promise<string> {
-  if (!path.startsWith("switch/") || /[\\:<>"|?*\x00-\x1f]/.test(path) ||
-      path.split("/").some(part => !part || part === "." || part === ".." || /[. ]$/.test(part))) {
-    throw new Error(`Unsafe target path: ${path}`);
-  }
+  relativePath(path);
   let current = root;
   const parts = path.split("/");
   for (const [index, part] of parts.entries()) {
@@ -62,6 +60,7 @@ export function mtpTarget(helper?: string, releaseCamera = false): Target {
     : join(import.meta.dir, "../dist/switchpack-mtp")));
   if (!existsSync(executable)) throw new Error(`MTP helper missing: ${executable}. Run bun run build:mtp (requires libmtp and a C compiler), or pass --mtp-helper.`);
   async function invoke(args: string[]): Promise<number> {
+    relativePath(args[1]);
     if (releaseCamera) {
       // Image Capture can reclaim USB between helper processes. Release it just before opening MTP.
       const camera = Bun.spawn(["pkill", "-KILL", "-x", "ptpcamerad"], { stdout: "ignore", stderr: "pipe" });

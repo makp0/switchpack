@@ -96,3 +96,39 @@ test("CLI rejects both connection modes together", () => {
   expect(result.exitCode).toBe(1);
   expect(result.stderr.toString()).toContain("cannot be used with");
 });
+
+
+test("MTP sysmodule packages use the same install, backup and status flow", async () => {
+  const f = await fixture();
+  const destination = "atmosphere/contents/430000000000000B/exefs.nsp";
+  await mkdir(join(f.sd, "atmosphere/contents/430000000000000B"), { recursive: true });
+  await writeFile(join(f.sd, destination), "old module");
+  await writeFile(f.manifest, JSON.stringify({ schemaVersion: 1, apps: { botbase: { repo: "example/botbase", version: "latest", asset: "app.nro", destination } } }));
+  await run("install", f.options, f.fetcher, f.target);
+  expect(await readFile(join(f.sd, destination), "utf8")).toBe("new app");
+  expect(await run("status", f.options, f.fetcher, f.target)).toEqual(["botbase@v1: ok"]);
+  const backups = join(f.sd, "switch/.switchpack/backups");
+  const [backup] = await readdir(backups);
+  expect(await readFile(join(backups, backup!, destination), "utf8")).toBe("old module");
+  await expect(f.target.read("atmosphere/../outside")).rejects.toThrow("Unsafe");
+});
+
+test("MTP manifest enable files can be removed, verified and recreated offline", async () => {
+  const f = await fixture();
+  const enableFile = "atmosphere/contents/430000000000000B/flags/boot2.flag";
+  const app = { repo: "example/app", version: "latest", asset: "app.nro", destination: "switch/app.nro", enableFile, enabled: true };
+  const save = () => writeFile(f.manifest, JSON.stringify({ schemaVersion: 1, apps: { app } }));
+  await save();
+  await run("install", f.options, f.fetcher, f.target);
+  expect((await f.target.read(enableFile))?.length).toBe(0);
+  app.enabled = false;
+  await save();
+  const offline = async (): Promise<Response> => { throw new Error("Must work offline"); };
+  await run("install", f.options, offline, f.target);
+  expect(await f.target.read(enableFile)).toBeUndefined();
+  expect(await run("status", f.options, offline, f.target)).toEqual(["app@v1: ok"]);
+  app.enabled = true;
+  await save();
+  await run("install", f.options, offline, f.target);
+  expect((await f.target.read(enableFile))?.length).toBe(0);
+});

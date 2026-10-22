@@ -1,6 +1,6 @@
 # switchpack
 
-A TypeScript + Bun CLI for managing Switch homebrew through a JSON manifest.
+A TypeScript + Bun CLI for managing Switch homebrew and sysmodule packages through a JSON manifest.
 Commander.js handles commands and help; fflate reads ZIP release assets.
 Supports DBI over MTP and Hekate USB Mass Storage / mounted SD cards.
 
@@ -90,14 +90,72 @@ The supplied `switchpack.json` installs Sphaira from `NaGaa95/sphaira`:
 }
 ```
 
-For ZIPs, `files` maps exact archive filenames to exact SD-relative filenames.
-Only listed entries are extracted. For a direct release asset, replace `files`
+For ZIP and 7z archives, `files` maps exact archive filenames to exact SD-relative filenames.
+Only listed entries are extracted. ZIP support is built in; 7z support requires
+`7zz` or `7z` on PATH (`brew install sevenzip` on macOS). 7z entries are streamed
+from 7-Zip into memory; archives are never unpacked directly onto the SD card.
+For a direct release asset, replace `files`
 with `"destination": "switch/example/example.nro"`. Asset names are exact,
-with no wildcard matching. Destinations must be under `switch/`.
+with no wildcard matching. Destinations may be any safe SD-relative file path. The manifest declares exactly
+where each file goes; package names and folders are not hardcoded. The target
+adapters handle reads and writes, while shared path validation rejects traversal
+and switchpack metadata destinations.
 
 `version` accepts `latest` (GitHub's latest stable release) or an exact tag such as
 `1.0.8`. Tags are literal: include a leading `v` only if the upstream tag has one.
 Semver ranges are not supported.
+
+## Sysmodule packages (USB botbase example)
+
+The same `apps` entries support sysmodules, overlays, and configuration files; no
+new package type or folder allowlist is needed. For example, destinations can be
+`atmosphere/contents/<title-id>/exefs.nsp`, `switch/.overlays/example.ovl`, or
+`config/example/settings.ini`. Existing homebrew manifests and lockfiles still work.
+
+[`examples/usb-botbase.json`](examples/usb-botbase.json) pins the upstream
+[USB botbase v2.5 release](https://github.com/Koi-3088/usb-botbase/releases/tag/v2.5)
+and maps its module and configuration. Its `enableFile` declares the boot flag. Start with a local staging
+folder, then use the same manifest with DBI:
+
+```sh
+brew install sevenzip
+mkdir -p sdroot
+bun run cli install --manifest examples/usb-botbase.json --target ./sdroot --dry-run
+bun run cli install --manifest examples/usb-botbase.json --target ./sdroot
+# When ready to install on the console, leave DBI's MTP responder open:
+bun run cli install --manifest examples/usb-botbase.json --mtp --dry-run
+bun run cli install --manifest examples/usb-botbase.json --mtp
+```
+
+The example has `"enabled": true`, which creates an empty file at `enableFile`,
+enabling the module at the next boot. To disable it, edit the app entry:
+
+```json
+"enableFile": "atmosphere/contents/430000000000000B/flags/boot2.flag",
+"enabled": false
+```
+
+Then apply it with the same target, for example:
+
+```sh
+bun run cli install --manifest examples/usb-botbase.json --mtp --release-camera
+```
+
+Changing only `enabled` reuses the existing lockfile and works offline. Disabling
+removes only `enableFile`; module binaries and settings are preserved. Removal is
+backed up, verified, and rolled back if installation fails. Status checks that the
+flag is absent when disabled. Both fields must be declared together, and the enable
+file must not also appear in `files`. This mechanism applies to tools controlled by
+an empty presence flag; it does not stop an already running module or change a
+setting inside a configuration file.
+Restart the console after installation. This console previously crashed with USB
+botbase; staging success does not establish firmware compatibility or stability.
+If it fails to boot, use Hekate's SD access to remove this module's
+`atmosphere/contents/430000000000000B/flags/boot2.flag`.
+
+Explicitly mapped configuration files are replaced on updates, with backups of
+previous contents. Omit configuration mappings if you want to preserve existing
+settings. Removing a mapping does not delete files already installed.
 
 ## Commands and lockfile
 
@@ -146,9 +204,10 @@ destination does not delete its old files; cleanup and backup restoration are
 manual. Explicitly mapping configuration files means updates replace them too.
 
 The CLI rejects traversal paths, symlink destinations, overlapping paths, and
-unknown manifest fields. Selected ZIP contents and downloads have a 128 MiB
-limit. It only handles homebrew files under `switch/`; firmware, bootloaders,
-sysmodules, and game installation are outside this version's scope.
+unknown manifest fields. Selected archive contents and downloads have a 128 MiB
+limit. It copies only explicitly mapped files; it does not install games, validate firmware
+compatibility, stop running sysmodules, or reboot the console. An incorrect mapping
+can replace system configuration, so inspect new manifests with `--dry-run`.
 
 Installation failures attempt to restore replaced files and remove newly written
 files. USB disconnection can prevent rollback; errors include the backup location
@@ -169,6 +228,8 @@ refuses to overwrite these recovery files. Inspect them and the operation's
 backups before restoring or removing them manually.
 
 ## Development
+
+Tests covering 7z archives require `7zz` or `7z` on PATH.
 
 ```sh
 bun test
