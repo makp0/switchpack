@@ -1,6 +1,6 @@
 {
   "name": "switchpack",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Declarative package management for Nintendo Switch homebrew and sysmodules",
   "license": "MIT",
