@@ -213,9 +213,17 @@ export async function run(command: "install" | "update" | "status", options: Opt
         messages.push(`${name}@${locked.tag}: ${states.every(state => state === "ok") ? "ok" : states.filter(state => state !== "ok").join(", ")}`);
         continue;
       }
-      // Enable-state changes reuse the locked payload and work without a download.
+      // Only skip downloads for install when the locked payload is already present and intact.
       const sameRelease = locked && same({ ...app, enabled: undefined }, { ...locked.spec, enabled: undefined });
-      if (locked && sameRelease && app.enableFile && (!matches || !app.enabled)) {
+      let payloadMatches = true;
+      if (command === "install" && locked && sameRelease && app.enableFile && (!matches || !app.enabled)) {
+        for (const [path, sha] of Object.entries(locked.files)) {
+          if (path === app.enableFile) continue;
+          const bytes = await target.read(path);
+          if (!bytes || hash(bytes) !== sha) payloadMatches = false;
+        }
+      }
+      if (command === "install" && locked && sameRelease && app.enableFile && (!matches || !app.enabled) && payloadMatches) {
         const checksums = { ...locked.files };
         const before = await target.read(app.enableFile);
         const data = app.enabled ? new Uint8Array() : undefined;
@@ -227,8 +235,8 @@ export async function run(command: "install" | "update" | "status", options: Opt
         messages.push(`${name}@${locked.tag}: ${app.enabled ? "enabled" : "disabled"}${changed ? " (enable file to " + (app.enabled ? "write" : "remove") + ")" : ""}`);
         continue;
       }
-      if (locked && !matches && command === "install") fail(`${name}: manifest changed; run update to refresh the lockfile`);
-      const resolved = command === "install" && matches ? locked : await release(app, fetcher);
+      if (locked && !matches && !sameRelease && command === "install") fail(`${name}: manifest changed; run update to refresh the lockfile`);
+      const resolved = command === "install" && locked && sameRelease ? locked : await release(app, fetcher);
       const url = `https://github.com/${app.repo}/releases/download/${encodeURIComponent(resolved.tag)}/${encodeURIComponent(app.asset)}`;
       const data = await responseBytes(await fetcher(url, { signal: AbortSignal.timeout(120_000) }));
       const sha256 = hash(data);
@@ -258,7 +266,7 @@ export async function run(command: "install" | "update" | "status", options: Opt
       let changed = 0;
       for (const [path, bytes] of Object.entries(files)) {
         checksums[path] = hash(bytes);
-        if (command === "install" && matches && checksums[path] !== locked.files[path]) fail(`${name}: locked file checksum mismatch`);
+        if (command === "install" && locked && sameRelease && path !== app.enableFile && checksums[path] !== locked.files[path]) fail(`${name}: locked file checksum mismatch`);
         const before = await target.read(path);
         if (!before || hash(before) !== checksums[path]) { writes.push({ path, data: bytes, before }); changed++; }
       }

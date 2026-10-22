@@ -344,3 +344,40 @@ test("enable settings require a boolean and a safe, non-conflicting file", async
   }
   expect(f.calls).toHaveLength(0);
 });
+
+test("disabled packages still update their payload to newer releases", async () => {
+  const f = await fixture();
+  await f.save({ app: { ...f.app, enableFile: "config/enabled.flag", enabled: false } });
+  await run("install", f.options, f.fetcher);
+  f.bump();
+  await run("update", f.options, f.fetcher);
+  expect(await readFile(f.file, "utf8")).toBe("second release");
+  expect(JSON.parse(await readFile(f.lock, "utf8")).apps.app.tag).toBe("v2");
+  expect(await Bun.file(join(f.target, "config/enabled.flag")).exists()).toBe(false);
+});
+
+test("a locked disabled package installs its payload on a fresh target", async () => {
+  const f = await fixture();
+  await f.save({ app: { ...f.app, enableFile: "config/enabled.flag", enabled: false } });
+  await run("install", f.options, f.fetcher);
+  const target = join(f.root, "fresh-sd");
+  await mkdir(target);
+  await run("install", { ...f.options, target }, f.fetcher);
+  expect(await readFile(join(target, "switch/app/app.nro"), "utf8")).toBe("first release");
+});
+
+test("flag changes repair modified payloads from the locked release", async () => {
+  const f = await fixture();
+  const app = { ...f.app, enableFile: "config/enabled.flag", enabled: false };
+  await f.save({ app });
+  await run("install", f.options, f.fetcher);
+  await writeFile(f.file, "modified payload");
+  app.enabled = true;
+  await f.save({ app });
+  f.calls.length = 0;
+  await run("install", f.options, f.fetcher);
+  expect(await readFile(f.file, "utf8")).toBe("first release");
+  expect(f.calls).toHaveLength(1);
+  expect(f.calls[0]).toContain("/download/v1/");
+  expect(await run("status", f.options, f.fetcher)).toEqual(["app@v1: ok"]);
+});
