@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "apps": {
+    "sphaira": {
+      "spec": {
+        "repo": "NaGaa95/sphaira",
+        "version": "latest",
+        "asset": "sphaira.zip",
+        "files": {
+          "switch/sphaira/sphaira.nro": "switch/sphaira/sphaira.nro"
+        }
+      },
+      "tag": "1.0.8",
+      "sha256": "3e7ebacd421917d426cc1ab49622ec4a1ea7943fb571d62aea7176089dc1384c",
+      "files": {
+        "switch/sphaira/sphaira.nro": "687a7a7203a4389e886a185ec05e98e2068c3749c9681b593f2484d38b2c1a15"
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "switchpack",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "switchpack": "./src/cli.ts" },
+  "scripts": {
+    "cli": "bun src/cli.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "build": "bun build --compile src/cli.ts --outfile dist/switchpack"
+  },
+  "dependencies": { "commander": "^14.0.0", "fflate": "^0.8.2" },
+  "devDependencies": { "@types/bun": "^1.3.0", "typescript": "^5.9.0" }
+}
