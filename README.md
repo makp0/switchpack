@@ -1,78 +1,71 @@
 # switchpack
 
-A TypeScript + Bun CLI for managing Switch homebrew through a JSON manifest.
-Commander.js handles commands and help; fflate reads ZIP release assets.
-Supports DBI over MTP and Hekate USB Mass Storage / mounted SD cards.
+[![CI](https://github.com/makp0/switchpack/actions/workflows/ci.yml/badge.svg)](https://github.com/makp0/switchpack/actions/workflows/ci.yml)
 
-## Quick start
+Keep your Nintendo Switch homebrew apps in one file. Install them, pin versions,
+and update them together—much like dependencies in `package.json`.
 
-Requires Bun 1.3 or newer. From this directory:
+switchpack runs on your computer. It downloads GitHub release assets, verifies
+checksums, and copies the files you choose to your Switch. It supports **DBI over
+USB MTP** and **Hekate USB Mass Storage / mounted SD cards**.
 
-```sh
-bun install --frozen-lockfile
-bun run cli --help
-
-# Start in a staging folder to inspect the result.
-mkdir -p ./sdroot
-bun run cli install --target ./sdroot --dry-run
-bun run cli install --target ./sdroot
-bun run cli status --target ./sdroot
-
-# Resolve newer releases, then install them.
-bun run cli update --target ./sdroot --dry-run
-bun run cli update --target ./sdroot
-```
-
-For your console, pass its mounted SD card root instead of `./sdroot`, e.g.
-`--target /Volumes/SWITCH`. Hekate USB Mass Storage can expose the card without
-removing it: open **Hekate → Tools → USB Tools → SD Card**, then use `--target`
-with the resulting mounted volume. The CLI also works with an ordinary staging
-directory whose files you copy yourself.
-
-## DBI MTP mode
-
-On macOS, install the native dependency and build the small MTP bridge:
+## Install
 
 ```sh
-brew install libmtp
-bun run build:mtp
+brew install makp0/tap/switchpack
 ```
 
-Linux requires libmtp development headers, `pkg-config`, and a C compiler.
-For example, on Debian/Ubuntu install `libmtp-dev pkg-config build-essential`,
-then run the same build command. Linux USB permissions must allow your user
-to access the device. Windows MTP is not supported by this helper.
+Supports macOS 15+ (Apple silicon or Intel) and Linux (ARM64 or x64).
+Homebrew installs the USB dependencies and helper automatically; you don't need
+Bun. Upgrade the CLI with `brew upgrade switchpack`.
 
-Connect one Switch by USB and leave **DBI → Run MTP responder** open:
+You can also [download a release](https://github.com/makp0/switchpack/releases).
+Direct downloads include the CLI and MTP helper source; see the
+[source build instructions](docs/reference.md#dbi-mtp-mode) for MTP setup.
+
+## First install
 
 ```sh
-bun run cli install --mtp --dry-run
-bun run cli install --mtp
-bun run cli status --mtp
-bun run cli update --mtp
+mkdir my-switch && cd my-switch
+switchpack init
 ```
 
-Choose exactly one of `--mtp` or `--target`. The helper selects Nintendo's USB
-vendor ID and DBI's `1: SD Card` storage; it does not write NAND or other storage.
+This creates `switchpack.json`, initially containing Sphaira. Review the file,
+then choose how to connect your Switch.
 
-If macOS Image Capture's `ptpcamerad` has claimed USB, add `--release-camera`:
+### DBI over USB
+
+Connect the Switch and open **DBI → Run MTP responder**. Keep it open:
 
 ```sh
-bun run cli install --mtp --release-camera
-bun run cli status --mtp --release-camera
+switchpack install --mtp --dry-run
+switchpack install --mtp
+switchpack status --mtp
 ```
 
-This explicitly stops your user's `ptpcamerad` process immediately before each
-USB connection. It may interrupt camera imports; macOS can restart the service.
-Other MTP clients should be closed. The CLI never requires sudo or kills the
-camera service unless this option is selected.
+If macOS reports that USB is busy, close other MTP clients and add
+`--release-camera`. This stops your user's camera service before each connection
+and can interrupt camera imports:
 
-The default helper is `dist/switchpack-mtp`. A compiled CLI looks for it beside
-its executable. Override it with `--mtp-helper /absolute/path/to/switchpack-mtp`.
-The helper and its libmtp shared-library dependency are separate from the Bun
-executable.
+```sh
+switchpack install --mtp --release-camera
+```
 
-The supplied `switchpack.json` installs Sphaira from `NaGaa95/sphaira`:
+### Hekate or a card reader
+
+In Hekate, open **Tools → USB Tools → SD Card**. Your computer should mount
+the card as a drive. A card reader also works. Replace the path with yours:
+
+```sh
+switchpack install --target /Volumes/SWITCH --dry-run
+switchpack install --target /Volumes/SWITCH
+switchpack status --target /Volumes/SWITCH
+```
+
+On Linux, use your mount point, such as `/media/your-user/SWITCH`.
+You can try these commands against an empty local folder first.
+
+## Declare your apps
 
 ```json
 {
@@ -90,87 +83,60 @@ The supplied `switchpack.json` installs Sphaira from `NaGaa95/sphaira`:
 }
 ```
 
-For ZIPs, `files` maps exact archive filenames to exact SD-relative filenames.
-Only listed entries are extracted. For a direct release asset, replace `files`
-with `"destination": "switch/example/example.nro"`. Asset names are exact,
-with no wildcard matching. Destinations must be under `switch/`.
+- `repo`: the upstream GitHub repository.
+- `version`: `latest` for its latest stable release, or an exact tag to pin it.
+- `asset`: the exact release filename.
+- `files`: map ZIP filenames on the left to SD paths on the right.
 
-`version` accepts `latest` (GitHub's latest stable release) or an exact tag such as
-`1.0.8`. Tags are literal: include a leading `v` only if the upstream tag has one.
-Semver ranges are not supported.
+For a direct `.nro` asset, use `"destination": "switch/app/app.nro"` instead
+of `files`. Only listed files are installed. Destinations must be under `switch/`.
 
-## Commands and lockfile
+The first install creates `switchpack.lock.json` with exact release tags and
+SHA-256 checksums. Keep both files in Git to reproduce your setup.
 
-| Command | Behavior |
-| --- | --- |
-| `install` | Reuse locked releases. Resolve new apps without lock entries. Reject changed app definitions until `update` is run. |
-| `update` | Resolve each manifest entry again, download and verify it, and refresh the lockfile. Exact version pins remain pinned. |
-| `status` | Compare local files with locked checksums, offline. Report unlocked, changed, missing, or modified apps. |
+## Update
 
-All commands require either `--target` or `--mtp`. Use `--manifest path/to/apps.json` to select a
-different manifest. Its lockfile will be `path/to/apps.lock.json`.
-Commit both manifest and lockfile for repeatable installs.
-
-`install` and `update` support `--dry-run`: download and validate everything,
-report planned writes, and leave app files and the lockfile untouched. This still
-uses the network. MTP dry runs read the device and briefly hold a local USB guard;
-`--release-camera`, when selected, also applies to dry runs and status.
-`status` does not check whether newer releases exist.
-
-The lockfile records exact release tags, whole-asset SHA-256 checksums, file
-checksums, and the app definition. A locked install verifies both asset and
-extracted file checksums. Downloads use HTTPS, and GitHub-provided asset digests
-are checked when available. Without an upstream digest, the first download's
-checksum is recorded; a checksum alone does not authenticate its publisher.
-
-Set `GITHUB_TOKEN` if GitHub API rate limits are a problem. The token is sent only
-to the GitHub API, never in the manifest, lockfile, logs, or asset request.
-
-## File handling
-
-All apps are downloaded and checked before any app files are written. Files
-already matching the expected checksum are skipped. Locally modified app files
-are replaced on install/update, with their previous contents backed up under:
-
-```text
-<target>/switch/.switchpack/backups/<operation-id>/switch/...
+```sh
+switchpack update --mtp --dry-run
+switchpack update --mtp
 ```
 
-In MTP mode, uploads first use a temporary filename and are read back byte for
-byte. Only verified uploads replace the existing filename, and the final file
-is read back again. The TypeScript manager also verifies the installed checksum
-before recording the lockfile. Mounted-SD writes likewise get checksum readback.
+Use `--target <path>` instead of `--mtp` for a mounted card.
 
-Unlisted files are preserved. Removing an app from the manifest or changing its
-destination does not delete its old files; cleanup and backup restoration are
-manual. Explicitly mapping configuration files means updates replace them too.
+| Command | What it does |
+| --- | --- |
+| `init` | Create a starter manifest; never overwrite an existing one. |
+| `install` | Install locked releases; resolve apps without lock entries. |
+| `update` | Resolve the manifest again and refresh installed files and lockfile. |
+| `status` | Check installed files against the lockfile without contacting GitHub. |
 
-The CLI rejects traversal paths, symlink destinations, overlapping paths, and
-unknown manifest fields. Selected ZIP contents and downloads have a 128 MiB
-limit. It only handles homebrew files under `switch/`; firmware, bootloaders,
-sysmodules, and game installation are outside this version's scope.
+Use `--manifest path/to/apps.json` for another setup, or `--help` for options.
+Changed app definitions require `update`. Removing an app from the manifest
+does not delete its files.
 
-Installation failures attempt to restore replaced files and remove newly written
-files. USB disconnection can prevent rollback; errors include the backup location
-when rollback fails. The lockfile is replaced only after successful app writes. This is **not
-a power-loss-safe transaction**: ejecting a card, terminating the process, or
-losing power during writes may require manual recovery from backups. Empty
-directories can remain after rollback. Do not modify the target concurrently.
+## Backups and limits
 
-Writes use `.switchpack-running` guard directories beside the manifest and at
-the mounted target root. MTP operations instead hold `switchpack-mtp-running` in
-the OS temporary directory, including reads, to prevent this user's switchpack
-processes from contending for USB. A stale guard can remain after an interrupted process. Remove
-it only after verifying that no switchpack process is running.
+Replaced files are backed up on the SD card under
+`switch/.switchpack/backups/<operation-id>/`. Unlisted files stay untouched.
+Installed files are read back and checked before the lockfile is saved.
 
-Interrupted MTP uploads may leave `<filename>.switchpack-tmp` (new upload) or
-`<filename>.switchpack-before` (previous file) beside the target. The helper
-refuses to overwrite these recovery files. Inspect them and the operation's
-backups before restoring or removing them manually.
+Failed installs attempt rollback. A disconnected cable or power loss can prevent
+recovery; inspect the backups before retrying. See
+[recovery and troubleshooting](docs/reference.md#file-handling).
+
+This version handles homebrew files under `switch/`, with a 128 MiB limit per
+download and per ZIP's selected contents. It does not manage firmware,
+bootloaders, sysmodules, or games. Windows is not supported.
 
 ## Development
 
+Requires Bun 1.3.14+, a C compiler, and libmtp development headers.
+
 ```sh
+git clone https://github.com/makp0/switchpack.git
+cd switchpack
+bun install --frozen-lockfile
+brew install libmtp # Linux: install libmtp-dev and pkg-config
 bun test
 bun run typecheck
 bun run build
@@ -178,7 +144,9 @@ bun run build:mtp
 ./dist/switchpack --help
 ```
 
-The build creates an executable for the current platform. No Bun installation is
-required to run it. MTP mode additionally requires the native helper and libmtp.
-Tests use isolated temporary directories, simulated GitHub releases, and a
-simulated MTP helper; they do not modify a console.
+Tests use temporary folders and a simulated MTP helper; they never write to
+a console. CI checks four OS/architecture combinations and builds release
+archives. See the [full reference](docs/reference.md) and
+[release instructions](docs/releasing.md).
+
+MIT licensed. See [third-party notices](THIRD_PARTY_NOTICES.md).

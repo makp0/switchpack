@@ -1,0 +1,54 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/ci.yml
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify tag matches package version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python3 -c 'import json,os; assert os.environ["TAG"] == "v" + json.load(open("package.json"))["version"], "Tag must match package.json version"'
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Checksums and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cd artifacts
+          sha256sum switchpack-*.tar.gz > SHA256SUMS
+          cat > release-notes.md <<'NOTES'
+          Install with Homebrew:
+
+          ```sh
+          brew install makp0/tap/switchpack
+          switchpack init
+          switchpack install --mtp --dry-run
+          ```
+
+          Choose `--mtp` for DBI, or `--target <mounted SD root>` for Hekate USB Mass Storage.
+          The Homebrew formula installs libmtp and builds the USB helper automatically.
+          The tap checks for new releases hourly; maintainers can refresh it immediately.
+
+          Direct downloads contain the compiled CLI and MTP helper source. See the README for building the helper.
+          Verify downloads with `sha256sum -c SHA256SUMS` (macOS: `shasum -a 256 -c SHA256SUMS`).
+          NOTES
+          gh release create "$TAG" switchpack-*.tar.gz SHA256SUMS --verify-tag --title "switchpack $TAG" --notes-file release-notes.md

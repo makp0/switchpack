@@ -1,11 +1,22 @@
 #!/usr/bin/env bun
 import { Command, Option } from "commander";
 import { run, type Options } from "./manager";
+import { writeFile } from "node:fs/promises";
+import example from "../switchpack.json";
+import { version } from "../package.json";
 
 const program = new Command()
   .name("switchpack")
   .description("Manage Switch homebrew from a JSON manifest and checksum lockfile")
-  .version("0.1.0");
+  .version(version);
+
+program.command("init")
+  .description("Create a starter manifest for Sphaira in the current directory")
+  .option("-m, --manifest <path>", "output manifest (existing files are never replaced)", "switchpack.json")
+  .action(async ({ manifest }: { manifest: string }) => {
+    await writeFile(manifest, JSON.stringify(example, null, 2) + "\n", { flag: "wx" });
+    console.log(`Created ${manifest}. Next: switchpack install --mtp --dry-run, or use --target <SD root>.`);
+  });
 
 for (const command of ["install", "update", "status"] as const) {
   const sub = program.command(command)

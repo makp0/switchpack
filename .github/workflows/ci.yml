@@ -1,0 +1,76 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: ${{ matrix.platform }}-${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            platform: darwin
+            arch: arm64
+          - runner: macos-15-intel
+            platform: darwin
+            arch: x64
+          - runner: ubuntu-24.04
+            platform: linux
+            arch: x64
+          - runner: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Install libmtp (macOS)
+        if: runner.os == 'macOS'
+        run: brew install libmtp
+      - name: Install libmtp (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libmtp-dev pkg-config
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+      - run: bun run build
+      - run: bun run build:mtp
+      - name: Smoke test compiled CLI
+        run: |
+          ./dist/switchpack --version
+          mkdir -p dist/smoke/sd
+          cd dist/smoke
+          ../switchpack init
+          ../switchpack status --target sd
+          if ../switchpack init; then
+            echo "init must refuse to overwrite an existing manifest" >&2
+            exit 1
+          fi
+      - name: Package release archive
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p dist/package/native dist/package/licenses
+          cp dist/switchpack dist/package/
+          cp native/mtp-transfer.c dist/package/native/
+          cp switchpack.json switchpack.lock.json README.md LICENSE THIRD_PARTY_NOTICES.md dist/package/
+          cp node_modules/commander/LICENSE dist/package/licenses/commander.txt
+          cp node_modules/fflate/LICENSE dist/package/licenses/fflate.txt
+          curl --fail --location --retry 3 https://raw.githubusercontent.com/oven-sh/bun/bun-v1.3.14/LICENSE.md -o dist/package/licenses/bun.txt
+          tar -czf "dist/switchpack-${PLATFORM}-${ARCH}.tar.gz" -C dist/package .
+      - uses: actions/upload-artifact@v7
+        with:
+          name: switchpack-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error

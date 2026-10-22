@@ -183,3 +183,16 @@ test("CLI framework provides help and rejects a missing target", async () => {
   expect(missing.exitCode).toBe(1);
   expect(missing.stderr.toString()).toContain("Choose exactly one");
 });
+
+test("init creates a starter manifest and preserves existing files", async () => {
+  const f = await fixture();
+  const cli = join(import.meta.dir, "../src/cli.ts");
+  const manifest = join(f.root, "starter.json");
+  const first = Bun.spawnSync([process.execPath, cli, "init", "--manifest", manifest]);
+  expect(first.exitCode).toBe(0);
+  expect(JSON.parse(await readFile(manifest, "utf8")).apps.sphaira.repo).toBe("NaGaa95/sphaira");
+  await writeFile(manifest, "keep my settings");
+  const second = Bun.spawnSync([process.execPath, cli, "init", "--manifest", manifest]);
+  expect(second.exitCode).toBe(1);
+  expect(await readFile(manifest, "utf8")).toBe("keep my settings");
+});
