@@ -226,7 +226,8 @@ bun run build:mtp
 
 Tests use temporary folders and a simulated MTP helper; they never write to
 a console. CI checks four OS/architecture combinations and builds release
-archives. See the [full reference](docs/reference.md) and
-[release instructions](docs/releasing.md).
+archives. Google's Release Please generates version bumps, `CHANGELOG.md`, and
+release notes from Conventional Commits through reviewable release PRs. See the
+[full reference](docs/reference.md) and [release instructions](docs/releasing.md).
 
 MIT licensed. See [third-party notices](THIRD_PARTY_NOTICES.md).
