@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "apps": {
+    "usb-botbase": {
+      "repo": "Koi-3088/usb-botbase",
+      "version": "v2.5",
+      "asset": "atmosphere.7z",
+      "files": {
+        "atmosphere/contents/430000000000000B/exefs.nsp": "atmosphere/contents/430000000000000B/exefs.nsp",
+        "atmosphere/contents/430000000000000B/config.cfg": "atmosphere/contents/430000000000000B/config.cfg"
+      },
+      "enableFile": "atmosphere/contents/430000000000000B/flags/boot2.flag",
+      "enabled": true,
+      "configFiles": {
+        "atmosphere/contents/430000000000000B/config.cfg": "wifi"
+      }
+    }
+  }
+}

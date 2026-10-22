@@ -4,12 +4,12 @@ import { basename, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { relativePath, destination } from "./paths";
 import { unzipSync } from "fflate";
-import { filesystemTarget, mtpTarget, optionalRead, type Target } from "./target";
+import { openTarget, optionalRead, type Target, type ConnectionOptions } from "./target";
 
-type App = { repo: string; version: string; asset: string; destination?: string; files?: Record<string, string>; enableFile?: string; enabled?: boolean };
+type App = { repo: string; version: string; asset: string; destination?: string; files?: Record<string, string>; enableFile?: string; enabled?: boolean; configFiles?: Record<string, string> };
 type LockedApp = { spec: App; tag: string; sha256: string; files: Record<string, string> };
 type Lock = { schemaVersion: 1; apps: Record<string, LockedApp> };
-export type Options = { manifest?: string; target?: string; mtp?: boolean; mtpHelper?: string; releaseCamera?: boolean; dryRun?: boolean };
+export type Options = ConnectionOptions & { manifest?: string; dryRun?: boolean };
 export const SWITCH_MANIFEST = "switch/.switchpack/switchpack.json";
 export const SWITCH_LOCK = "switch/.switchpack/switchpack.lock.json";
 type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
@@ -26,7 +26,7 @@ function keys(value: Record<string, unknown>, allowed: string[]) {
 
 function parseApp(value: unknown): App {
   if (!record(value)) fail("Each app must be an object");
-  keys(value, ["repo", "version", "asset", "destination", "files", "enableFile", "enabled"]);
+  keys(value, ["repo", "version", "asset", "destination", "files", "enableFile", "enabled", "configFiles"]);
   if (!text(value.repo) || !/^[\w.-]+\/[\w.-]+$/.test(value.repo)) fail("Expected repo: owner/repository");
   if (!text(value.version) || /[\x00-\x1f]/.test(value.version)) fail("Expected version: latest or an exact release tag");
   relativePath(value.asset);
@@ -47,6 +47,16 @@ function parseApp(value: unknown): App {
     destination(value.destination);
     app.destination = value.destination;
   }
+  if (value.configFiles !== undefined) {
+    if (!record(value.configFiles)) fail("configFiles must map SD-relative paths to UTF-8 strings");
+    app.configFiles = Object.create(null);
+    for (const path of Object.keys(value.configFiles).sort()) {
+      destination(path);
+      const content = value.configFiles[path];
+      if (typeof content !== "string" || Buffer.byteLength(content) > 1024 * 1024) fail("Each configFiles value must be a UTF-8 string of at most 1 MiB");
+      app.configFiles![path] = content;
+    }
+  }
   if (value.enableFile !== undefined || value.enabled !== undefined) {
     destination(value.enableFile);
     if (typeof value.enabled !== "boolean") fail("enableFile requires enabled: true or false");
@@ -56,7 +66,9 @@ function parseApp(value: unknown): App {
   return app;
 }
 
-const paths = (app: App) => [...(app.files ? Object.values(app.files) : [app.destination!]), ...(app.enableFile && app.enabled ? [app.enableFile] : [])];
+const payloadPaths = (app: App) => app.files ? Object.values(app.files) : [app.destination!];
+const paths = (app: App) => [...payloadPaths(app), ...Object.keys(app.configFiles ?? {}).filter(path => !payloadPaths(app).includes(path)), ...(app.enableFile && app.enabled ? [app.enableFile] : [])];
+const releaseSpec = (app: App) => ({ ...app, enabled: undefined, configFiles: undefined });
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
 function parseManifest(bytes: Uint8Array): Record<string, App> {
@@ -93,6 +105,9 @@ function parseLock(bytes?: Uint8Array): Lock {
       destination(path);
       if (!digest(sha)) fail(`Invalid file checksum: ${name}`);
       files[path] = sha;
+    }
+    for (const [path, content] of Object.entries(spec.configFiles ?? {})) {
+      if (files[path] !== hash(Buffer.from(content, "utf8"))) fail(`Lock config checksum does not match declared content: ${name}`);
     }
     if (!same(Object.keys(files).sort(), paths(spec).sort())) fail(`Lock file list does not match manifest: ${name}`);
     apps[name] = { spec, tag: value.tag, sha256: value.sha256, files };
@@ -174,9 +189,9 @@ async function release(app: App, fetcher: Fetcher): Promise<{ tag: string; sha25
   return { tag: data.tag_name, sha256: sha };
 }
 
-export async function run(command: "install" | "update" | "status" | "manifest", options: Options, fetcher: Fetcher = fetch, injectedTarget?: Target): Promise<string[]> {
-  if (Boolean(options.target) === Boolean(options.mtp)) fail("Choose exactly one of --target (Hekate/mounted SD) or --mtp (DBI)");
-  const target = injectedTarget ?? (options.mtp ? mtpTarget(options.mtpHelper, options.releaseCamera) : await filesystemTarget(options.target!));
+export async function run(command: "install" | "update" | "status" | "manifest" | "reboot", options: Options, fetcher: Fetcher = fetch, injectedTarget?: Target): Promise<string[]> {
+  if ([options.target, options.mtp, options.ftp].filter(Boolean).length !== 1) fail("Choose exactly one of --target (mounted SD), --mtp (USB), or --ftp (Wi-Fi)");
+  const target = injectedTarget ?? await openTarget(options);
   const readonly = command === "status" || command === "manifest" || options.dryRun;
   const guards: string[] = [];
   async function acquire(path: string) {
@@ -188,7 +203,12 @@ export async function run(command: "install" | "update" | "status" | "manifest",
     guards.push(path);
   }
   try {
-    if (options.mtp || !readonly) await acquire(target.guard);
+    if (options.mtp || options.ftp || !readonly) await acquire(target.guard);
+    if (command === "reboot") {
+      if (!target.reboot) fail("This transport does not support reboot. Use --ftp with a server supporting ftpsrv's REBT command; Sphaira's embedded FTP does not currently expose it.");
+      await target.reboot();
+      return ["Console acknowledged reboot request; boot completion is not yet verified."];
+    }
     const savedManifest = await target.read(SWITCH_MANIFEST);
     const savedLock = await target.read(SWITCH_LOCK);
     // The Switch is authoritative unless a local manifest was explicitly selected.
@@ -211,7 +231,7 @@ export async function run(command: "install" | "update" | "status" | "manifest",
       const locked = previous.apps[name];
       const matches = locked && same(app, locked.spec);
       if (command === "status") {
-        if (!matches) { messages.push(`${name}: ${locked ? "manifest changed; run update" : "unlocked; run install"}`); continue; }
+        if (!matches) { messages.push(`${name}: ${locked ? same(releaseSpec(app), releaseSpec(locked.spec)) ? "settings changed; run install" : "manifest changed; run update" : "unlocked; run install"}`); continue; }
         const states = [];
         for (const [path, sha] of Object.entries(locked.files)) {
           const bytes = await target.read(path);
@@ -222,25 +242,38 @@ export async function run(command: "install" | "update" | "status" | "manifest",
         continue;
       }
       // Only skip downloads for install when the locked payload is already present and intact.
-      const sameRelease = locked && same({ ...app, enabled: undefined }, { ...locked.spec, enabled: undefined });
+      const sameRelease = locked && same(releaseSpec(app), releaseSpec(locked.spec));
+      const settingsOnly = sameRelease && (app.configFiles !== undefined || locked.spec.configFiles !== undefined || (app.enableFile && (!matches || !app.enabled)));
       let payloadMatches = true;
-      if (command === "install" && locked && sameRelease && app.enableFile && (!matches || !app.enabled)) {
-        for (const [path, sha] of Object.entries(locked.files)) {
-          if (path === app.enableFile) continue;
+      if (command === "install" && locked && settingsOnly) {
+        for (const path of payloadPaths(app)) {
+          if (Object.hasOwn(app.configFiles ?? {}, path)) continue;
+          // Removing an override of a packaged file requires the original asset again.
+          if (Object.hasOwn(locked.spec.configFiles ?? {}, path)) { payloadMatches = false; continue; }
           const bytes = await target.read(path);
-          if (!bytes || hash(bytes) !== sha) payloadMatches = false;
+          if (!bytes || hash(bytes) !== locked.files[path]) payloadMatches = false;
         }
       }
-      if (command === "install" && locked && sameRelease && app.enableFile && (!matches || !app.enabled) && payloadMatches) {
-        const checksums = { ...locked.files };
-        const before = await target.read(app.enableFile);
-        const data = app.enabled ? new Uint8Array() : undefined;
-        const changed = app.enabled ? !before || before.length !== 0 : before !== undefined;
-        if (changed) writes.push({ path: app.enableFile, data, before });
-        if (app.enabled) checksums[app.enableFile] = hash(data!);
-        else delete checksums[app.enableFile];
+      if (command === "install" && locked && settingsOnly && payloadMatches) {
+        const checksums = Object.fromEntries(Object.entries(locked.files).filter(([path]) => paths(app).includes(path)));
+        let changed = 0;
+        for (const [path, content] of Object.entries(app.configFiles ?? {})) {
+          const data = Buffer.from(content, "utf8");
+          const before = await target.read(path);
+          checksums[path] = hash(data);
+          if (!before || hash(before) !== checksums[path]) { writes.push({ path, data, before }); changed++; }
+        }
+        if (app.enableFile) {
+          const before = await target.read(app.enableFile);
+          const data = app.enabled ? new Uint8Array() : undefined;
+          if (app.enabled ? !before || before.length !== 0 : before !== undefined) { writes.push({ path: app.enableFile, data, before }); changed++; }
+          if (app.enabled) checksums[app.enableFile] = hash(data!);
+          else delete checksums[app.enableFile];
+        }
         next.apps[name] = { ...locked, spec: app, files: checksums };
-        messages.push(`${name}@${locked.tag}: ${app.enabled ? "enabled" : "disabled"}${changed ? " (enable file to " + (app.enabled ? "write" : "remove") + ")" : ""}`);
+        messages.push(app.enableFile && !app.configFiles
+          ? `${name}@${locked.tag}: ${app.enabled ? "enabled" : "disabled"}${changed ? " (enable file to " + (app.enabled ? "write" : "remove") + ")" : ""}`
+          : `${name}@${locked.tag}: ${changed ? `${changed} config/flag change(s)` : "up to date"}`);
         continue;
       }
       if (locked && !matches && !sameRelease && command === "install") fail(`${name}: manifest changed; run update to refresh the lockfile`);
@@ -269,12 +302,13 @@ export async function run(command: "install" | "update" | "status" | "manifest",
           files[target] = bytes;
         }
       } else files[app.destination!] = data;
+      for (const [path, content] of Object.entries(app.configFiles ?? {})) files[path] = Buffer.from(content, "utf8");
       if (app.enableFile && app.enabled) files[app.enableFile] = new Uint8Array();
       const checksums: Record<string, string> = Object.create(null);
       let changed = 0;
       for (const [path, bytes] of Object.entries(files)) {
         checksums[path] = hash(bytes);
-        if (command === "install" && locked && sameRelease && path !== app.enableFile && checksums[path] !== locked.files[path]) fail(`${name}: locked file checksum mismatch`);
+        if (command === "install" && locked && sameRelease && path !== app.enableFile && !Object.hasOwn(app.configFiles ?? {}, path) && !Object.hasOwn(locked.spec.configFiles ?? {}, path) && checksums[path] !== locked.files[path]) fail(`${name}: locked file checksum mismatch`);
         const before = await target.read(path);
         if (!before || hash(before) !== checksums[path]) { writes.push({ path, data: bytes, before }); changed++; }
       }
@@ -337,6 +371,7 @@ export async function run(command: "install" | "update" | "status" | "manifest",
     if (lockPath) messages.push(`Local lockfile: ${lockPath}`);
     return messages;
   } finally {
-    for (const path of guards.reverse()) await rm(path, { recursive: true });
+    try { await target.close?.(); }
+    finally { for (const path of guards.reverse()) await rm(path, { recursive: true }); }
   }
 }

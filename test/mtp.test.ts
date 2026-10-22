@@ -149,3 +149,18 @@ test("fresh-PC MTP discovery reads saved manifest and lock through the helper", 
   expect(await Bun.file(f.manifest).exists()).toBe(false);
   expect(await Bun.file(join(f.root, "switchpack.lock.json")).exists()).toBe(false);
 });
+
+test("MTP config edits use the shared offline settings path and verified backups", async () => {
+  const f = await fixture();
+  const manifest = JSON.parse(await readFile(f.manifest, "utf8"));
+  manifest.apps.app.configFiles = { "config/app.ini": "usb" };
+  await writeFile(f.manifest, JSON.stringify(manifest));
+  await run("install", f.options, f.fetcher, f.target);
+  manifest.apps.app.configFiles["config/app.ini"] = "wifi";
+  await writeFile(f.manifest, JSON.stringify(manifest));
+  await run("install", f.options, async () => { throw new Error("No network"); }, f.target);
+  expect(await readFile(join(f.sd, "config/app.ini"), "utf8")).toBe("wifi");
+  expect(await run("status", f.options, f.fetcher, f.target)).toEqual(["app@v1: ok"]);
+  const backups = await readdir(join(f.sd, "switch/.switchpack/backups"));
+  expect(await readFile(join(f.sd, "switch/.switchpack/backups", backups[0]!, "config/app.ini"), "utf8")).toBe("usb");
+});

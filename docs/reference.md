@@ -105,6 +105,86 @@ and switchpack metadata destinations.
 `1.0.8`. Tags are literal: include a leading `v` only if the upstream tag has one.
 Semver ranges are not supported.
 
+## Declarative configuration
+
+Each app can declare `configFiles`: SD-relative filenames mapped to exact UTF-8
+contents (up to 1 MiB per file). This works for any app or sysmodule and any text
+format; switchpack writes whole files rather than interpreting INI/JSON keys.
+For example, add this to a USB Botbase app entry:
+
+```json
+"configFiles": {
+  "atmosphere/contents/430000000000000B/config.cfg": "wifi"
+}
+```
+
+Config contents override packaged defaults at the same destination. They are
+checksummed in the lock, included in `status`, backed up before replacement,
+read back after writes, and restored on a failed transaction. `install` applies
+settings-only edits offline when the locked binary files are intact. `update`
+continues to apply declared settings after installing a newer release. Package
+changes still require `update`. Dry runs leave configs and metadata untouched.
+
+Removing a standalone config mapping leaves that file on the SD, unmanaged.
+Removing an override of a still-mapped packaged file restores the packaged
+default on the next install/update (which requires downloading the locked asset).
+Files not declared in either mapping remain untouched. Interactive edits to
+managed files are drift: the next install replaces them with declared contents.
+Only opt files into management when this is what you want.
+
+The device manifest and local/device lockfiles include the config contents.
+Keep passwords and other secrets out of committed manifests. No credentials
+are needed for the Botbase mode config. Applying a file does not reload a
+running sysmodule or automatically reboot the console.
+
+See [Botbase Wi-Fi example](../examples/botbase-wifi.json).
+
+## Wi-Fi FTP target
+
+The same installation engine supports mounted SD cards (`--target`), USB MTP
+(`--mtp`) and Wi-Fi FTP (`--ftp`). Select exactly one. USB Botbase is a controller
+protocol, not a filesystem protocol; Wi-Fi installs need Sphaira/ftpsrv or another
+FTP server running on the Switch. FTP and USB MTP share a local guard against
+concurrent writes from this copy of switchpack.
+
+Sphaira defaults to FTP port 5000 and exposes the SD under `sdmc:`:
+
+```sh
+switchpack manifest --ftp ftp://192.168.1.123:5000/sdmc:
+switchpack install --ftp ftp://192.168.1.123:5000/sdmc: --dry-run
+switchpack install --ftp ftp://192.168.1.123:5000/sdmc:
+switchpack status --ftp ftp://192.168.1.123:5000/sdmc:
+```
+
+The URL path must name the **SD root**, not the server's virtual mount list.
+For servers exposing SD directly, use `/`. Anonymous login is the default; use
+`SWITCHPACK_FTP_USER` and `SWITCHPACK_FTP_PASSWORD` for authenticated servers.
+Credentials in URLs are rejected. `ftps://` requests explicit TLS with normal
+certificate validation; there is no fallback to plaintext. Sphaira's ordinary
+FTP is unencrypted: use it only on your trusted LAN.
+
+FTP writes upload to a temporary sibling and verify its contents. Existing files
+are renamed aside before replacement because Sphaira refuses overwrite-renames;
+failed replacements restore the original. The engine also verifies the final file.
+There is a brief gap between the two renames, so avoid power loss during writes. Missing-file checks use directory
+listings so permission and connection failures cannot masquerade as absence.
+Symbolic links and unsafe relative paths are rejected. This guard coordinates
+local processes, not other computers/FTP clients; close those during installs.
+
+## Explicit reboot
+
+```sh
+switchpack reboot --ftp ftp://192.168.1.123:5000/sdmc:
+```
+
+This sends ftpsrv's `REBT` extension only when explicitly requested. A positive
+acknowledgement confirms the request, not successful boot completion. A dropped
+connection without acknowledgement is reported as a failure; do not blindly
+retry. Standalone ftpsrv implements this extension. Sphaira 1.0.8's embedded FTP
+server does **not** register it, and mounted SD / DBI MTP do not expose reboot.
+Unsupported servers return an error; no HID sequences or unverified reboot
+workarounds are used. Finish transfers and close games before requesting reboot.
+
 ## Sysmodule packages (USB botbase example)
 
 The same `apps` entries support sysmodules, overlays, and configuration files; no
@@ -155,9 +235,9 @@ firmware compatibility or runtime stability.
 If it fails to boot, use Hekate's SD access to remove this module's
 `atmosphere/contents/430000000000000B/flags/boot2.flag`.
 
-Explicitly mapped configuration files are replaced on updates, with backups of
-previous contents. Omit configuration mappings if you want to preserve existing
-settings. Removing a mapping does not delete files already installed.
+Explicitly mapped package configuration files are replaced on updates, with backups of
+previous contents. Use `configFiles` for declared settings that override package defaults.
+Omit both mappings to preserve an app-managed file. Removing a mapping does not delete files already installed.
 
 ## Commands and lockfile
 

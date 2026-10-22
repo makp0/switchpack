@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { ftpTarget } from "./ftp";
 
 export type Target = {
   guard: string;
@@ -10,7 +11,20 @@ export type Target = {
   write(path: string, data: Uint8Array, exclusive?: boolean): Promise<void>;
   remove(path: string): Promise<void>;
   describe(path: string): string;
+  close?(): Promise<void>;
+  reboot?(): Promise<void>;
 };
+
+export type ConnectionOptions = { target?: string; mtp?: boolean; mtpHelper?: string; releaseCamera?: boolean; ftp?: string };
+
+export async function openTarget(options: ConnectionOptions): Promise<Target> {
+  if ([options.target, options.mtp, options.ftp].filter(Boolean).length !== 1) {
+    throw new Error("Choose exactly one of --target (mounted SD), --mtp (USB), or --ftp (Wi-Fi)");
+  }
+  if (!options.mtp && (options.mtpHelper || options.releaseCamera)) throw new Error("MTP helper/camera options require --mtp");
+  if (options.ftp) return ftpTarget(options.ftp);
+  return options.mtp ? mtpTarget(options.mtpHelper, options.releaseCamera) : filesystemTarget(options.target!);
+}
 
 export async function optionalRead(path: string): Promise<Uint8Array | undefined> {
   try { return await readFile(path); } catch (error) {

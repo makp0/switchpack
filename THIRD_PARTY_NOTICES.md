@@ -1,10 +1,11 @@
 # Third-party software
 
-The compiled CLI includes Commander.js (MIT), fflate (MIT), and the Bun runtime
+The compiled CLI includes Commander.js (MIT), fflate (MIT), basic-ftp (MIT), and the Bun runtime
 (MIT, with its own third-party notices). Their upstream license and notice files:
 
 - [Commander.js](https://github.com/tj/commander.js/blob/master/LICENSE)
 - [fflate](https://github.com/101arrowz/fflate/blob/master/LICENSE)
+- [basic-ftp](https://github.com/patrickjuchli/basic-ftp/blob/master/LICENSE.txt)
 - [Bun](https://github.com/oven-sh/bun/blob/main/LICENSE.md)
 
 Release archives include copies under `licenses/`.

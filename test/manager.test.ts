@@ -511,3 +511,75 @@ test("a malformed saved lock fails before modifying payloads", async () => {
   expect(f.calls).toHaveLength(0);
   expect(await readFile(f.file, "utf8")).toBe("first release");
 });
+
+test("declarative config overrides packaged defaults, updates offline, detects drift and survives releases", async () => {
+  const f = await fixture(true);
+  const path = "config/settings.ini";
+  const app = { ...f.app, files: { ...f.app.files, "config/settings.ini": path }, configFiles: { [path]: "mode=usb\r\n", "config/empty.cfg": "" } as Record<string, string> };
+  await f.save({ app });
+  await run("install", f.options, f.fetcher);
+  expect(await readFile(join(f.target, path), "utf8")).toBe("mode=usb\r\n");
+  app.configFiles[path] = "mode=wifi\n";
+  await f.save({ app });
+  const offline = async (): Promise<Response> => { throw new Error("Must work offline"); };
+  await run("install", { ...f.options, dryRun: true }, offline);
+  expect(await readFile(join(f.target, path), "utf8")).toBe("mode=usb\r\n");
+  await run("install", f.options, offline);
+  expect(await readFile(join(f.target, path), "utf8")).toBe("mode=wifi\n");
+  await writeFile(join(f.target, path), "manual edit");
+  expect(await run("status", f.options, offline)).toEqual(["app@v1: modified"]);
+  await run("install", f.options, offline);
+  expect(await run("status", f.options, offline)).toEqual(["app@v1: ok"]);
+  f.bump();
+  await run("update", f.options, f.fetcher);
+  expect(await readFile(join(f.target, path), "utf8")).toBe("mode=wifi\n");
+  expect(await readFile(join(f.target, "config/empty.cfg"), "utf8")).toBe("");
+  delete app.configFiles[path];
+  await f.save({ app });
+  await run("install", f.options, f.fetcher);
+  expect(await readFile(join(f.target, path), "utf8")).toBe("do not copy");
+});
+
+test("managed configs reject unsafe paths, overlaps, non-string values and oversized content", async () => {
+  const f = await fixture();
+  for (const configFiles of [{ "../bad": "x" }, { "switch/.switchpack/config": "x" }, { "config/a": 1 }, { "config/a": "a".repeat(1024 * 1024 + 1) }, { "config/a": "x", "config/a/b": "y" }]) {
+    await f.save({ app: { ...f.app, configFiles } });
+    await expect(run("install", f.options, f.fetcher)).rejects.toThrow();
+  }
+  await f.save({ app: { ...f.app, configFiles: { "config/a": "x" }, enableFile: "config/a", enabled: false } });
+  await expect(run("install", f.options, f.fetcher)).rejects.toThrow("Conflicting");
+  await f.save({ app: { ...f.app, configFiles: { "config/a": "x" } }, other: { ...f.app, destination: "switch/other.nro", configFiles: { "CONFIG/a": "y" } } });
+  await expect(run("install", f.options, f.fetcher)).rejects.toThrow("Conflicting");
+  expect(f.calls).toHaveLength(0);
+});
+
+test("config changes roll back with the device manifest and lock on metadata failure", async () => {
+  const f = await fixture();
+  const app = { ...f.app, configFiles: { "config/app.ini": "old" } };
+  await f.save({ app });
+  await run("install", f.options, f.fetcher);
+  const before = await readFile(join(f.target, SWITCH_MANIFEST));
+  app.configFiles["config/app.ini"] = "new";
+  await f.save({ app });
+  const { filesystemTarget } = await import("../src/target");
+  const target = await filesystemTarget(f.target);
+  const originalWrite = target.write;
+  let failed = false;
+  target.write = async (path, ...args) => {
+    if (path === SWITCH_LOCK && !failed) { failed = true; throw new Error("metadata interrupted"); }
+    await originalWrite(path, ...args);
+  };
+  await expect(run("install", f.options, f.fetcher, target)).rejects.toThrow("metadata interrupted");
+  expect(await readFile(join(f.target, "config/app.ini"), "utf8")).toBe("old");
+  expect(await readFile(join(f.target, SWITCH_MANIFEST))).toEqual(before);
+});
+
+test("lockfile config hashes must agree with declared UTF-8 contents", async () => {
+  const f = await fixture();
+  await f.save({ app: { ...f.app, configFiles: { "config/app.ini": "wifi" } } });
+  await run("install", f.options, f.fetcher);
+  const lock = JSON.parse(await readFile(f.lock, "utf8"));
+  lock.apps.app.files["config/app.ini"] = "0".repeat(64);
+  await writeFile(f.lock, JSON.stringify(lock));
+  await expect(run("status", f.options, f.fetcher)).rejects.toThrow("config checksum");
+});

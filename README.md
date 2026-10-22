@@ -7,7 +7,11 @@ and update them together—much like dependencies in `package.json`.
 
 switchpack runs on your computer. It downloads GitHub release assets, verifies
 checksums, and copies the files you choose to your Switch. It supports **DBI over
-USB MTP** and **Hekate USB Mass Storage / mounted SD cards**.
+USB MTP**, **Wi-Fi FTP**, and **Hekate USB Mass Storage / mounted SD cards**.
+
+Manage exact config contents with per-app `configFiles` as well as package versions
+and enable flags. The [configuration and transport reference](docs/reference.md#declarative-configuration)
+covers drift detection, backups, Wi-Fi setup and explicit reboot support.
 
 ## Install
 

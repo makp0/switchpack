@@ -76,6 +76,7 @@ jobs:
           if [ -f CHANGELOG.md ]; then cp CHANGELOG.md dist/package/; fi
           cp node_modules/commander/LICENSE dist/package/licenses/commander.txt
           cp node_modules/fflate/LICENSE dist/package/licenses/fflate.txt
+          cp node_modules/basic-ftp/LICENSE.txt dist/package/licenses/basic-ftp.txt
           curl --fail --location --retry 3 https://raw.githubusercontent.com/oven-sh/bun/bun-v1.3.14/LICENSE.md -o dist/package/licenses/bun.txt
           tar -czf "dist/switchpack-${PLATFORM}-${ARCH}.tar.gz" -C dist/package .
       - uses: actions/upload-artifact@v7
