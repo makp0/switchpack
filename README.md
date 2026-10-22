@@ -103,9 +103,12 @@ and configuration files to `atmosphere/contents/430000000000000B/`. Try it in a
 staging folder before installing it on a console:
 
 ```sh
+cp "$(brew --prefix)/share/switchpack/examples/usb-botbase.json" ./usb-botbase.json
 mkdir -p sdroot
-switchpack install --manifest examples/usb-botbase.json --target sdroot --dry-run
+switchpack install --manifest usb-botbase.json --target sdroot --dry-run
 ```
+
+When running from a source checkout, use `examples/usb-botbase.json` directly.
 
 Packages controlled by a presence flag can declare:
 

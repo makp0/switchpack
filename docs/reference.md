@@ -112,7 +112,7 @@ new package type or folder allowlist is needed. For example, destinations can be
 `atmosphere/contents/<title-id>/exefs.nsp`, `switch/.overlays/example.ovl`, or
 `config/example/settings.ini`. Existing homebrew manifests and lockfiles still work.
 
-[`examples/usb-botbase.json`](examples/usb-botbase.json) pins the upstream
+[`examples/usb-botbase.json`](../examples/usb-botbase.json) pins the upstream
 [USB botbase v2.5 release](https://github.com/Koi-3088/usb-botbase/releases/tag/v2.5)
 and maps its module and configuration. Its `enableFile` declares the boot flag. Start with a local staging
 folder, then use the same manifest with DBI:
@@ -141,15 +141,17 @@ Then apply it with the same target, for example:
 bun run cli install --manifest examples/usb-botbase.json --mtp --release-camera
 ```
 
-Changing only `enabled` reuses the existing lockfile and works offline. Disabling
+Changing only `enabled` reuses the existing lockfile and works offline when the
+locked payload is already present and verified. `update` still resolves releases
+and refreshes payloads, including disabled packages. Disabling
 removes only `enableFile`; module binaries and settings are preserved. Removal is
 backed up, verified, and rolled back if installation fails. Status checks that the
 flag is absent when disabled. Both fields must be declared together, and the enable
 file must not also appear in `files`. This mechanism applies to tools controlled by
 an empty presence flag; it does not stop an already running module or change a
 setting inside a configuration file.
-Restart the console after installation. This console previously crashed with USB
-botbase; staging success does not establish firmware compatibility or stability.
+Restart the console after installation. A successful transfer does not establish
+firmware compatibility or runtime stability.
 If it fails to boot, use Hekate's SD access to remove this module's
 `atmosphere/contents/430000000000000B/flags/boot2.flag`.
 

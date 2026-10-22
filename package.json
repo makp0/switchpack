@@ -1,8 +1,8 @@
 {
   "name": "switchpack",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Declarative package management for Nintendo Switch homebrew",
+  "description": "Declarative package management for Nintendo Switch homebrew and sysmodules",
   "license": "MIT",
   "repository": "github:makp0/switchpack",
   "engines": { "bun": ">=1.3.14" },

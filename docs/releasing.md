@@ -6,8 +6,8 @@
 3. Commit and push. Wait for CI, then tag the matching version:
 
 ```sh
-git tag -a v0.1.0 -m 'Release switchpack 0.1.0'
-git push origin v0.1.0
+git tag -a v0.2.0 -m 'Release switchpack 0.2.0'
+git push origin v0.2.0
 ```
 
 Use the version being released. The Release workflow rejects tags that differ
