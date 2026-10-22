@@ -105,7 +105,7 @@ test("checksum mismatch prevents writes and keeps the previous lock", async () =
 
 test("unsafe paths, overlapping destinations and unknown fields are rejected", async () => {
   const f = await fixture();
-  for (const destination of ["../outside", "/switch/app.nro", "switch/../save", "atmosphere/app", "switch/x\\y", "switch/x./file"]) {
+  for (const destination of ["../outside", "/switch/app.nro", "switch/../save", "switch/x\\y", "switch/x./file"]) {
     await f.save({ app: { ...f.app, destination } });
     await expect(run("install", f.options, f.fetcher)).rejects.toThrow();
   }
@@ -195,4 +195,152 @@ test("init creates a starter manifest and preserves existing files", async () =>
   const second = Bun.spawnSync([process.execPath, cli, "init", "--manifest", manifest]);
   expect(second.exitCode).toBe(1);
   expect(await readFile(manifest, "utf8")).toBe("keep my settings");
+});
+
+
+test("arbitrary SD-relative package destinations install, update, back up and report status", async () => {
+  const f = await fixture();
+  const destination = "atmosphere/contents/430000000000000B/exefs.nsp";
+  await f.save({ botbase: { ...f.app, destination } });
+  await run("install", { ...f.options, dryRun: true }, f.fetcher);
+  expect(await readdir(f.target)).toEqual([]);
+  await run("install", f.options, f.fetcher);
+  expect(await readFile(join(f.target, destination), "utf8")).toBe("first release");
+  expect(await run("status", f.options, f.fetcher)).toEqual(["botbase@v1: ok"]);
+  f.bump();
+  await run("update", f.options, f.fetcher);
+  const backups = join(f.target, "switch/.switchpack/backups");
+  const [backup] = await readdir(backups);
+  expect(await readFile(join(backups, backup!, destination), "utf8")).toBe("first release");
+  await f.save({ botbase: { ...f.app, destination: "custom-package.bin" } });
+  await run("update", f.options, f.fetcher);
+  expect(await readFile(join(f.target, "custom-package.bin"), "utf8")).toBe("second release");
+});
+
+test("ZIP packages install empty boot flags and config alongside sysmodules", async () => {
+  const f = await fixture(true);
+  const base = "atmosphere/contents/430000000000000B";
+  const files = { [`${base}/exefs.nsp`]: new TextEncoder().encode("module"), [`${base}/flags/boot2.flag`]: new Uint8Array(), "config/example/config.ini": new TextEncoder().encode("config") };
+  await f.save({ botbase: { ...f.app, files: Object.fromEntries(Object.keys(files).map(path => [path, path])) } });
+  const fetcher = async (url: string) => url.startsWith("https://api.github.com/")
+    ? Response.json({ tag_name: "v1", assets: [{ name: "app.zip" }] }) : new Response(zipSync(files));
+  await run("install", f.options, fetcher);
+  for (const [path, bytes] of Object.entries(files)) expect(new Uint8Array(await readFile(join(f.target, path)))).toEqual(bytes);
+});
+
+test("reserved metadata, traversal and sysmodule symlinks are rejected", async () => {
+  const f = await fixture();
+  for (const destination of ["switch", "switch/.switchpack", "switch/.SWITCHPACK/backups/x", ".switchpack-running", "config/.SWITCHPACK-RUNNING/file", "atmosphere/../outside", "atmosphere//file"]) {
+    await f.save({ app: { ...f.app, destination } });
+    await expect(run("install", f.options, f.fetcher)).rejects.toThrow();
+  }
+  const outside = join(f.root, "outside");
+  await mkdir(outside);
+  await symlink(outside, join(f.target, "atmosphere"));
+  await f.save({ app: { ...f.app, destination: "atmosphere/module.nsp" } });
+  await expect(run("install", f.options, f.fetcher)).rejects.toThrow("symlink");
+  expect(await readdir(outside)).toEqual([]);
+});
+
+test("sysmodule lockfile failure restores the previous module and removes its new boot flag", async () => {
+  const f = await fixture(true);
+  const base = "atmosphere/contents/430000000000000B";
+  await mkdir(join(f.target, base), { recursive: true });
+  await writeFile(join(f.target, base, "exefs.nsp"), "original module");
+  await f.save({ botbase: { ...f.app, files: { "module": `${base}/exefs.nsp`, "flag": `${base}/flags/boot2.flag` } } });
+  const fetcher = async (url: string) => {
+    if (url.startsWith("https://api.github.com/")) return Response.json({ tag_name: "v1", assets: [{ name: "app.zip" }] });
+    await mkdir(f.lock);
+    return new Response(zipSync({ module: new TextEncoder().encode("new module"), flag: new Uint8Array() }));
+  };
+  await expect(run("install", f.options, fetcher)).rejects.toThrow();
+  expect(await readFile(join(f.target, base, "exefs.nsp"), "utf8")).toBe("original module");
+  expect(await Bun.file(join(f.target, base, "flags/boot2.flag")).exists()).toBe(false);
+});
+
+test("7z packages extract only mapped files, including empty files, and reject missing entries", async () => {
+  const executable = Bun.which("7zz") ?? Bun.which("7z");
+  if (!executable) throw new Error("Install 7zz/7z to run the 7z integration test");
+  const f = await fixture();
+  const source = join(f.root, "source");
+  await mkdir(source);
+  await writeFile(join(source, "module.nsp"), "module");
+  await writeFile(join(source, "boot2.flag"), "");
+  await writeFile(join(source, "unlisted"), "leave out");
+  const archive = join(f.root, "package.7z");
+  const child = Bun.spawn([executable, "a", archive, "."], { cwd: source, stdout: "ignore", stderr: "inherit" });
+  expect(await child.exited).toBe(0);
+  const base = "atmosphere/contents/430000000000000B";
+  const app = { ...f.app, asset: "package.7z", destination: undefined, files: { "module.nsp": `${base}/exefs.nsp`, "boot2.flag": `${base}/flags/boot2.flag` } };
+  await f.save({ botbase: app });
+  const fetcher = async (url: string) => url.startsWith("https://api.github.com/")
+    ? Response.json({ tag_name: "v1", assets: [{ name: "package.7z" }] }) : new Response(await readFile(archive));
+  await run("install", f.options, fetcher);
+  expect(await readFile(join(f.target, base, "exefs.nsp"), "utf8")).toBe("module");
+  expect((await readFile(join(f.target, base, "flags/boot2.flag"))).length).toBe(0);
+  expect(await run("status", f.options, fetcher)).toEqual(["botbase@v1: ok"]);
+  expect(await readdir(f.target)).toEqual(["atmosphere"]);
+  await f.save({ botbase: { ...app, files: { missing: "elsewhere/file" } } });
+  await expect(run("update", f.options, fetcher)).rejects.toThrow("missing or duplicated");
+});
+
+test("manifest enable state toggles offline with backups and status drift detection", async () => {
+  const f = await fixture();
+  const enableFile = "atmosphere/contents/430000000000000B/flags/boot2.flag";
+  const app = { ...f.app, enableFile, enabled: true };
+  await f.save({ app });
+  await run("install", f.options, f.fetcher);
+  expect((await readFile(join(f.target, enableFile))).length).toBe(0);
+  app.enabled = false;
+  await f.save({ app });
+  const offline = async (): Promise<Response> => { throw new Error("Must work offline"); };
+  const lockBefore = await readFile(f.lock, "utf8");
+  expect((await run("install", { ...f.options, dryRun: true }, offline)).join(" ")).toContain("remove");
+  expect(await Bun.file(join(f.target, enableFile)).exists()).toBe(true);
+  expect(await readFile(f.lock, "utf8")).toBe(lockBefore);
+  await run("install", f.options, offline);
+  expect(await Bun.file(join(f.target, enableFile)).exists()).toBe(false);
+  expect(await readFile(f.file, "utf8")).toBe("first release");
+  expect(await run("status", f.options, offline)).toEqual(["app@v1: ok"]);
+  const backups = join(f.target, "switch/.switchpack/backups");
+  const [backup] = await readdir(backups);
+  expect((await readFile(join(backups, backup!, enableFile))).length).toBe(0);
+  await writeFile(join(f.target, enableFile), "");
+  expect((await run("status", f.options, offline)).join(" ")).toContain("expected disabled");
+  await run("install", f.options, offline);
+  expect(await Bun.file(join(f.target, enableFile)).exists()).toBe(false);
+  app.enabled = true;
+  await f.save({ app });
+  await run("install", f.options, offline);
+  expect((await readFile(join(f.target, enableFile))).length).toBe(0);
+  expect(await run("status", f.options, offline)).toEqual(["app@v1: ok"]);
+});
+
+test("enable-file removal rolls back when saving the lock fails", async () => {
+  const f = await fixture();
+  const enableFile = "config/example/enabled.flag";
+  const app = { ...f.app, enableFile, enabled: true };
+  await f.save({ app });
+  await run("install", f.options, f.fetcher);
+  app.enabled = false;
+  await f.save({ app });
+  const { filesystemTarget } = await import("../src/target");
+  const target = await filesystemTarget(f.target);
+  const originalRemove = target.remove;
+  target.remove = async path => {
+    await originalRemove(path);
+    await rm(f.lock);
+    await mkdir(f.lock);
+  };
+  await expect(run("install", f.options, f.fetcher, target)).rejects.toThrow();
+  expect((await readFile(join(f.target, enableFile))).length).toBe(0);
+});
+
+test("enable settings require a boolean and a safe, non-conflicting file", async () => {
+  const f = await fixture();
+  for (const settings of [{ enabled: false }, { enableFile: "config/flag" }, { enableFile: "../flag", enabled: true }, { enableFile: f.app.destination, enabled: false }, { enableFile: "config/flag", enabled: "false" }]) {
+    await f.save({ app: { ...f.app, ...settings } });
+    await expect(run("install", f.options, f.fetcher)).rejects.toThrow();
+  }
+  expect(f.calls).toHaveLength(0);
 });

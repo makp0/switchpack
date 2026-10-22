@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/makp0/switchpack/actions/workflows/ci.yml/badge.svg)](https://github.com/makp0/switchpack/actions/workflows/ci.yml)
 
-Keep your Nintendo Switch homebrew apps in one file. Install them, pin versions,
+Keep your Nintendo Switch homebrew apps and sysmodules in one file. Install them, pin versions,
 and update them together—much like dependencies in `package.json`.
 
 switchpack runs on your computer. It downloads GitHub release assets, verifies
@@ -86,13 +86,43 @@ You can try these commands against an empty local folder first.
 - `repo`: the upstream GitHub repository.
 - `version`: `latest` for its latest stable release, or an exact tag to pin it.
 - `asset`: the exact release filename.
-- `files`: map ZIP filenames on the left to SD paths on the right.
+- `files`: map ZIP or 7z filenames on the left to SD paths on the right.
 
 For a direct `.nro` asset, use `"destination": "switch/app/app.nro"` instead
-of `files`. Only listed files are installed. Destinations must be under `switch/`.
+of `files`. Only listed files are installed. Destinations can be any safe
+SD-relative file path, including `atmosphere/contents/`, `config/`, and overlays.
+ZIP support is built in; 7z archives require `7zz` or `7z` on PATH.
 
 The first install creates `switchpack.lock.json` with exact release tags and
 SHA-256 checksums. Keep both files in Git to reproduce your setup.
+
+## Sysmodules and boot flags
+
+The [USB botbase example](examples/usb-botbase.json) pins v2.5 and maps its module
+and configuration files to `atmosphere/contents/430000000000000B/`. Try it in a
+staging folder before installing it on a console:
+
+```sh
+mkdir -p sdroot
+switchpack install --manifest examples/usb-botbase.json --target sdroot --dry-run
+```
+
+Packages controlled by a presence flag can declare:
+
+```json
+"enableFile": "atmosphere/contents/430000000000000B/flags/boot2.flag",
+"enabled": false
+```
+
+`enabled: true` creates an empty boot flag; `false` removes it while preserving
+the module and configuration. Apply changes with `install` using the same
+manifest and connection options. Changing only `enabled` can work offline when
+the locked payload is already installed and verified. Reboot the console for
+boot-flag changes to take effect; this does not stop a running module.
+
+Configuration files explicitly listed in `files` are replaced during updates.
+Omit their mappings to preserve your own settings. See the
+[full sysmodule example](docs/reference.md#sysmodule-packages-usb-botbase-example).
 
 ## Update
 
@@ -111,7 +141,8 @@ Use `--target <path>` instead of `--mtp` for a mounted card.
 | `status` | Check installed files against the lockfile without contacting GitHub. |
 
 Use `--manifest path/to/apps.json` for another setup, or `--help` for options.
-Changed app definitions require `update`. Removing an app from the manifest
+Changed package definitions require `update`, except for `enabled` changes.
+Removing a package from the manifest
 does not delete its files.
 
 ## Backups and limits
@@ -124,19 +155,20 @@ Failed installs attempt rollback. A disconnected cable or power loss can prevent
 recovery; inspect the backups before retrying. See
 [recovery and troubleshooting](docs/reference.md#file-handling).
 
-This version handles homebrew files under `switch/`, with a 128 MiB limit per
-download and per ZIP's selected contents. It does not manage firmware,
-bootloaders, sysmodules, or games. Windows is not supported.
+Downloads and each archive's selected contents have a 128 MiB limit. Incorrect
+destination mappings can replace system configuration. switchpack does not
+validate firmware compatibility, stop running sysmodules, reboot the console,
+or install games. Windows is not supported.
 
 ## Development
 
-Requires Bun 1.3.14+, a C compiler, and libmtp development headers.
+Requires Bun 1.3.14+, a C compiler, libmtp development headers, and 7-Zip.
 
 ```sh
 git clone https://github.com/makp0/switchpack.git
 cd switchpack
 bun install --frozen-lockfile
-brew install libmtp # Linux: install libmtp-dev and pkg-config
+brew install libmtp sevenzip # Linux: install libmtp-dev, pkg-config, and 7zip
 bun test
 bun run typecheck
 bun run build

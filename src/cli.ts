@@ -7,7 +7,7 @@ import { version } from "../package.json";
 
 const program = new Command()
   .name("switchpack")
-  .description("Manage Switch homebrew from a JSON manifest and checksum lockfile")
+  .description("Manage Switch homebrew and sysmodule packages from a JSON manifest and checksum lockfile")
   .version(version);
 
 program.command("init")
@@ -21,7 +21,7 @@ program.command("init")
 for (const command of ["install", "update", "status"] as const) {
   const sub = program.command(command)
     .description({ install: "Install locked releases; resolve apps without a lock entry", update: "Resolve manifest versions and install updates", status: "Compare target files against the lockfile (offline)" }[command])
-    .option("-m, --manifest <path>", "app manifest", "switchpack.json")
+    .option("-m, --manifest <path>", "package manifest", "switchpack.json")
     .addOption(new Option("-t, --target <directory>", "Hekate USB Mass Storage, mounted SD card root, or staging directory").conflicts("mtp"))
     .addOption(new Option("--mtp", "connect to DBI's MTP responder over USB").conflicts("target"))
     .addOption(new Option("--mtp-helper <path>", "native libmtp helper executable").implies({ mtp: true }))

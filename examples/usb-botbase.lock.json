@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "apps": {
+    "usb-botbase": {
+      "spec": {
+        "repo": "Koi-3088/usb-botbase",
+        "version": "v2.5",
+        "asset": "atmosphere.7z",
+        "files": {
+          "atmosphere/contents/430000000000000B/config.cfg": "atmosphere/contents/430000000000000B/config.cfg",
+          "atmosphere/contents/430000000000000B/exefs.nsp": "atmosphere/contents/430000000000000B/exefs.nsp"
+        },
+        "enableFile": "atmosphere/contents/430000000000000B/flags/boot2.flag",
+        "enabled": true
+      },
+      "tag": "v2.5",
+      "sha256": "1fbae924068aa2cb2bd4ea4e7b657c1d4b327dfe0a05a5b9021a7507e9e24ccb",
+      "files": {
+        "atmosphere/contents/430000000000000B/config.cfg": "39685bc33dacc026f01539e3ef8dd835fbb68ab470c65847043277a576e2f81a",
+        "atmosphere/contents/430000000000000B/exefs.nsp": "f2fa7d289dd450ceb07417cdd3f7b906067fb225718084e6c6989da3c396e695",
+        "atmosphere/contents/430000000000000B/flags/boot2.flag": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    }
+  }
+}

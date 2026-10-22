@@ -23,14 +23,15 @@ static void fail(const char *message) {
 }
 
 static void validate(const char *path) {
-  if (strncmp(path, "switch/", 7) || strlen(path) > 400) fail("Only SD-relative switch/ paths up to 400 bytes are supported");
+  if (!*path || strlen(path) > 400) fail("Only SD-relative paths up to 400 bytes are supported");
   const char *part = path;
   for (const char *p = path; ; p++) {
     if ((unsigned char)*p < 32 && *p) fail("Unsafe path");
     if (strchr("\\:<>\"|?*", *p) && *p) fail("Unsafe path");
     if (*p == '/' || !*p) {
       size_t length = (size_t)(p - part);
-      if (!length || (length == 1 && !strncmp(part, ".", 1)) ||
+      if ((length == 19 && !strncasecmp(part, ".switchpack-running", length)) ||
+          !length || (length == 1 && !strncmp(part, ".", 1)) ||
           (length == 2 && !strncmp(part, "..", 2)) || p[-1] == '.' || p[-1] == ' ') fail("Unsafe path component");
       if (!*p) break;
       part = p + 1;
@@ -130,8 +131,11 @@ static void upload(const char *remote, const char *local, int exclusive) {
     if (exclusive) fail("Backup destination already exists");
   }
   char *parent_path = strdup(remote), *base = strrchr(parent_path, '/');
-  *base++ = 0;
-  uint32_t parent = ensure_parent(parent_path);
+  uint32_t parent = LIBMTP_FILES_AND_FOLDERS_ROOT;
+  if (base) {
+    *base++ = 0;
+    parent = ensure_parent(parent_path);
+  } else base = parent_path;
   char temp_name[512], old_name[512], temp_path[512], old_path[512];
   snprintf(temp_name, sizeof(temp_name), "%s.switchpack-tmp", base);
   snprintf(old_name, sizeof(old_name), "%s.switchpack-before", base);
